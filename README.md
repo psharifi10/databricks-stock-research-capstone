@@ -33,6 +33,34 @@ The schema uses PostgreSQL-native types, `TIMESTAMPTZ` operational timestamps, J
 
 `app/db.py` provides a small psycopg 3 connection and transaction context boundary. It does not fetch secrets, embed schema DDL, or execute business queries. For a new deployment, the preferred direction is a Databricks App PostgreSQL resource with platform-managed OAuth and rotating credentials. The exact live connection mode will be finalized after confirming whether the capstone environment uses Lakebase Autoscaling or an existing Provisioned resource; no endpoint name or OAuth flow is guessed here.
 
+## Phase 2 market-data and service foundation
+
+Phase 2 adds framework-independent primitives with one directional dependency flow:
+
+```text
+Massive Stocks REST API
+          |
+          v
+     MassiveClient
+          |
+          v
+  StockResearchService
+          |
+          v
+    StockRepository
+          |
+          v
+ Lakebase PostgreSQL
+```
+
+`app/massive_client.py` uses the current company-overview, daily aggregate, and ticker-news endpoints. It authenticates through a bearer header, reuses one HTTP session, follows official `next_url` pagination, applies explicit timeouts, validates ticker and date input, and converts upstream failures into safe errors. Normalized records remain separate from HTTP response objects while retaining the raw Massive payload for provenance. News sentiment is stored on each article/ticker relationship, including null-sentiment relationships for referenced tickers without an insight.
+
+`app/repositories.py` provides parameterized, idempotent SQL operations for users, the deterministic default watchlist, companies, daily price snapshots, news articles, article/ticker relationships, and read-side price/news retrieval. It opens transactions only when a method is called and contains no HTTP logic.
+
+`app/services.py` composes Massive reads with repository writes for company, price-history, and news refreshes. Later Flask routes and MCP tools will call this same service layer instead of duplicating API or SQL behavior.
+
+All Phase 2 tests use mocked HTTP sessions and database connections. No live Massive request, Lakebase connection, or deployment validation is claimed.
+
 ## Proposed architecture
 
 ```text
@@ -81,13 +109,13 @@ The frontend and MCP server are separate deployment units. Shared business rules
 - Establish project guidance, architecture notes, ignore rules, and empty top-level directories.
 - Initialize an independent git repository.
 
-### Phase 1 — Foundation and Lakebase model (current)
+### Phase 1 — Foundation and Lakebase model (complete)
 
 - Define configuration boundaries and local/deployed secret resolution.
 - Design idempotent Lakebase schema migrations for users, watchlists, companies, price snapshots, news, research notes, and reports.
 - Add database helpers, input validation, and focused unit tests.
 
-### Phase 2 — Massive integration and application services
+### Phase 2 — Massive integration and application services (current)
 
 - Implement a resilient Massive client with explicit timeouts, pagination, rate-limit handling, and normalized responses.
 - Add reusable company, historical-price, news, and watchlist services.

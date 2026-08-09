@@ -78,8 +78,6 @@ CREATE TABLE IF NOT EXISTS news_articles (
     publisher TEXT,
     article_url TEXT,
     published_at TIMESTAMPTZ,
-    sentiment TEXT,
-    sentiment_reasoning TEXT,
     keywords TEXT[],
     raw_source_payload JSONB NOT NULL,
     synced_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -91,6 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_news_articles_published_at
 CREATE TABLE IF NOT EXISTS news_article_tickers (
     article_id TEXT NOT NULL REFERENCES news_articles (id) ON DELETE CASCADE,
     ticker TEXT NOT NULL,
+    sentiment TEXT,
+    sentiment_reasoning TEXT,
     CONSTRAINT pk_news_article_tickers PRIMARY KEY (article_id, ticker),
     CONSTRAINT ck_news_article_tickers_uppercase CHECK (ticker = UPPER(ticker))
 );

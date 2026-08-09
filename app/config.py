@@ -11,10 +11,20 @@ DEFAULT_PG_PORT = 5432
 DEFAULT_PG_SSLMODE = "require"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 DEFAULT_APPLICATION_NAME = "databricks-stock-research-capstone"
+DEFAULT_MASSIVE_API_BASE_URL = "https://api.massive.com"
+DEFAULT_MASSIVE_REQUEST_TIMEOUT_SECONDS = 15.0
 
 
-class DatabaseConfigurationError(RuntimeError):
+class ConfigurationError(RuntimeError):
+    """Base class for safe application configuration errors."""
+
+
+class DatabaseConfigurationError(ConfigurationError):
     """Raised when database settings are missing or invalid."""
+
+
+class MassiveConfigurationError(ConfigurationError):
+    """Raised when Massive API settings are missing or invalid."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +133,49 @@ def load_database_config() -> DatabaseConfig:
     return DatabaseConfig.from_env()
 
 
+@dataclass(frozen=True, slots=True)
+class MassiveConfig:
+    """Massive API settings resolved without making a request."""
+
+    api_key: str | None = field(default=None, repr=False)
+    base_url: str = DEFAULT_MASSIVE_API_BASE_URL
+    request_timeout_seconds: float = DEFAULT_MASSIVE_REQUEST_TIMEOUT_SECONDS
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "MassiveConfig":
+        """Build Massive settings from the current environment."""
+
+        values = os.environ if env is None else env
+        return cls(
+            api_key=_optional_value(values, "MASSIVE_API_KEY"),
+            base_url=(
+                _optional_value(values, "MASSIVE_API_BASE_URL")
+                or DEFAULT_MASSIVE_API_BASE_URL
+            ).rstrip("/"),
+            request_timeout_seconds=_positive_float(
+                values,
+                "MASSIVE_REQUEST_TIMEOUT",
+                DEFAULT_MASSIVE_REQUEST_TIMEOUT_SECONDS,
+            ),
+        )
+
+    def require_api_key(self) -> str:
+        """Return the configured key or raise a client-safe error."""
+
+        if not self.api_key:
+            raise MassiveConfigurationError(
+                "Massive API configuration is incomplete. Set MASSIVE_API_KEY "
+                "or provide a deployment-specific credential provider."
+            )
+        return self.api_key
+
+
+def load_massive_config() -> MassiveConfig:
+    """Load Massive configuration from the current process environment."""
+
+    return MassiveConfig.from_env()
+
+
 def _optional_value(env: Mapping[str, str], name: str) -> str | None:
     value = env.get(name)
     if value is None:
@@ -151,5 +204,26 @@ def _positive_int(
         upper_bound = f" no greater than {maximum}" if maximum else ""
         raise DatabaseConfigurationError(
             f"{name} must be a positive integer{upper_bound}; received {value}."
+        )
+    return value
+
+
+def _positive_float(
+    env: Mapping[str, str],
+    name: str,
+    default: float,
+) -> float:
+    raw_value = _optional_value(env, name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise MassiveConfigurationError(
+            f"{name} must be a positive number; received {raw_value!r}."
+        ) from error
+    if value <= 0:
+        raise MassiveConfigurationError(
+            f"{name} must be a positive number; received {value}."
         )
     return value
