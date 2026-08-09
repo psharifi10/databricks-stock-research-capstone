@@ -39,7 +39,7 @@ class DatabaseConfig:
     host: str | None = None
     database: str | None = None
     user: str | None = None
-    password: str | None = field(default=None, repr=False)
+    endpoint_name: str | None = None
     port: int = DEFAULT_PG_PORT
     sslmode: str = DEFAULT_PG_SSLMODE
     connect_timeout_seconds: int = DEFAULT_CONNECT_TIMEOUT_SECONDS
@@ -55,7 +55,7 @@ class DatabaseConfig:
             host=_optional_value(values, "PGHOST"),
             database=_optional_value(values, "PGDATABASE"),
             user=_optional_value(values, "PGUSER"),
-            password=_optional_value(values, "PGPASSWORD"),
+            endpoint_name=_optional_value(values, "ENDPOINT_NAME"),
             port=_positive_int(
                 values,
                 "PGPORT",
@@ -80,17 +80,17 @@ class DatabaseConfig:
 
         if self.lakebase_url:
             return "lakebase_url"
-        if any((self.host, self.database, self.user, self.password)):
-            return "pg_environment"
+        if any((self.host, self.database, self.user, self.endpoint_name)):
+            return "databricks_oauth"
         return "unconfigured"
 
     def psycopg_connect_parameters(self) -> tuple[str | None, dict[str, object]]:
         """Return validated arguments for ``psycopg.connect``.
 
         A legacy/local URL takes precedence when provided. Otherwise PGHOST,
-        PGDATABASE, and PGUSER are required. PGPASSWORD is optional because the
-        production credential mechanism will be finalized for the actual
-        Databricks PostgreSQL App resource.
+        PGDATABASE, PGUSER, and ENDPOINT_NAME are required for Databricks OAuth.
+        The generated credential is deliberately not part of this object or
+        the returned parameters.
         """
 
         common: dict[str, object] = {
@@ -104,13 +104,14 @@ class DatabaseConfig:
             "PGHOST": self.host,
             "PGDATABASE": self.database,
             "PGUSER": self.user,
+            "ENDPOINT_NAME": self.endpoint_name,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:
             names = ", ".join(missing)
             raise DatabaseConfigurationError(
                 "Database configuration is incomplete. Set LAKEBASE_URL for "
-                "local/legacy use, or provide the required PostgreSQL "
+                "local/legacy use, or provide the required Databricks OAuth "
                 f"environment variables: {names}."
             )
 
@@ -122,8 +123,6 @@ class DatabaseConfig:
             "port": self.port,
             "sslmode": self.sslmode,
         }
-        if self.password:
-            parameters["password"] = self.password
         return None, parameters
 
 

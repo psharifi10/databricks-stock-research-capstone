@@ -2,7 +2,7 @@
 
 An educational, production-minded capstone that helps a user research public companies using grounded market data and financial news. The project will combine a Databricks-hosted frontend, Lakebase application storage, Spark ingestion and enrichment, semantic retrieval, MCP tools, and a Databricks Agent Bricks supervisor.
 
-Phase 1 establishes the relational schema and the configuration/database boundary. Application routes, external API calls, pipelines, embeddings, retrieval, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
+Phases 1 and 2 establish the relational schema, configuration/database boundary, and Massive-backed service layer. Phase 3B adds Lakebase Autoscaling OAuth connectivity and schema administration scripts. Application routes, pipelines, embeddings, retrieval, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
 
 ## Capstone requirements
 
@@ -29,9 +29,9 @@ The idempotent schema in `sql/001_core_schema.sql` defines the ten MVP tables:
 
 The schema uses PostgreSQL-native types, `TIMESTAMPTZ` operational timestamps, JSONB source payloads, lifecycle-aware foreign keys, and focused lookup indexes. It deliberately does not enable pgvector or add embedding columns; vector capability and model dimensions will be confirmed in the later RAG phase.
 
-`app/config.py` reads either standard PostgreSQL environment fields (`PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, `PGSSLMODE`, and optional `PGPASSWORD`) or an optional `LAKEBASE_URL` for local/legacy compatibility. Only non-sensitive settings have defaults. Configuration is validated only when a database connection is requested, so offline tooling and tests can import the application without credentials.
+`app/config.py` reads either standard PostgreSQL environment fields (`PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, and `PGSSLMODE`) plus `ENDPOINT_NAME` for Databricks OAuth, or an optional `LAKEBASE_URL` for isolated local/legacy compatibility. OAuth mode does not use `PGPASSWORD`. Only non-sensitive settings have defaults. Configuration is validated only when a database connection is requested, so offline tooling and tests can import the application without credentials.
 
-`app/db.py` provides a small psycopg 3 connection and transaction context boundary. It does not fetch secrets, embed schema DDL, or execute business queries. For a new deployment, the preferred direction is a Databricks App PostgreSQL resource with platform-managed OAuth and rotating credentials. The exact live connection mode will be finalized after confirming whether the capstone environment uses Lakebase Autoscaling or an existing Provisioned resource; no endpoint name or OAuth flow is guessed here.
+`app/db.py` provides a small psycopg 3 connection and transaction context boundary. It does not embed schema DDL or execute business queries. Lakebase Autoscaling OAuth credential generation is described below.
 
 ## Phase 2 market-data and service foundation
 
@@ -60,6 +60,51 @@ Massive Stocks REST API
 `app/services.py` composes Massive reads with repository writes for company, price-history, and news refreshes. Later Flask routes and MCP tools will call this same service layer instead of duplicating API or SQL behavior.
 
 All Phase 2 tests use mocked HTTP sessions and database connections. No live Massive request, Lakebase connection, or deployment validation is claimed.
+
+## Phase 3B Lakebase Autoscaling connectivity
+
+Each new OAuth database connection follows the Databricks-recommended flow:
+
+```text
+Local developer                         Future deployed Databricks App
+Databricks CLI OAuth                    App service principal
+          |                                      |
+          +---------------+----------------------+
+                          v
+                  WorkspaceClient
+                          |
+                          v
+          generate_database_credential()
+                          |
+                          v
+       short-lived Lakebase OAuth password
+                          |
+                          v
+                       psycopg
+```
+
+The database credential is generated immediately before a new connection and is held only long enough to pass it to psycopg. No permanent database password is required or stored. `LAKEBASE_URL`, when deliberately configured, takes precedence solely as a legacy/local compatibility path and does not invoke Databricks credential generation.
+
+The confirmed local Lakebase Autoscaling environment can be selected in PowerShell without setting `PGPASSWORD`:
+
+```powershell
+$env:PGHOST="ep-proud-waterfall-d8765xn2.database.us-east-2.cloud.databricks.com"
+$env:PGDATABASE="databricks_postgres"
+$env:PGUSER="sharifip1234@gmail.com"
+$env:PGPORT="5432"
+$env:PGSSLMODE="require"
+$env:ENDPOINT_NAME="projects/stock-research-capstone/branches/production/endpoints/primary"
+```
+
+The local Databricks CLI profile must already be authenticated to the target workspace. From the repository root, run the scripts in order:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_lakebase.py
+.\.venv\Scripts\python.exe scripts\apply_schema.py
+.\.venv\Scripts\python.exe scripts\verify_schema.py
+```
+
+`check_lakebase.py` prints only the connected user and database. `apply_schema.py` executes the canonical idempotent `sql/001_core_schema.sql` in the normal transaction boundary and never seeds data. `verify_schema.py` succeeds only when the public schema contains exactly the ten expected MVP tables. These commands are manual live operations and are not part of the offline unit-test suite.
 
 ## Proposed architecture
 
@@ -115,11 +160,17 @@ The frontend and MCP server are separate deployment units. Shared business rules
 - Design idempotent Lakebase schema migrations for users, watchlists, companies, price snapshots, news, research notes, and reports.
 - Add database helpers, input validation, and focused unit tests.
 
-### Phase 2 — Massive integration and application services (current)
+### Phase 2 — Massive integration and application services (complete)
 
 - Implement a resilient Massive client with explicit timeouts, pagination, rate-limit handling, and normalized responses.
 - Add reusable company, historical-price, news, and watchlist services.
 - Persist source timestamps and provenance with market facts.
+
+### Phase 3B — Lakebase Autoscaling connectivity (current)
+
+- Generate short-lived Lakebase credentials through the Databricks SDK for each new OAuth connection.
+- Provide safe connection, idempotent schema-application, and exact schema-verification scripts.
+- Keep all ordinary unit tests offline through injected clients and connections.
 
 ### Phase 3 — Spark news and embedding pipeline
 
