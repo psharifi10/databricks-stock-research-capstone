@@ -1,0 +1,56 @@
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Build and package output
+build/
+dist/
+*.egg-info/
+*.whl
+*.zip
+
+# Databricks and infrastructure local state
+.databricks/
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Local data and generated artifacts
+data/
+generated_data/
+*.parquet
+*.csv
+*.jsonl
+
+# JavaScript dependencies/build output (if introduced later)
+node_modules/
+.next/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+#Other
