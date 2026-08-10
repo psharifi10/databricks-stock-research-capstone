@@ -24,12 +24,20 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
             "_safe_json_keys",
             "_data_api_response_summary",
             "_data_api_http_failure",
+            "_safe_diagnostic_code",
+            "_sanitize_diagnostic_field",
+            "_data_api_diagnostic_summary",
+            "_data_api_diagnostic_failure",
+        }
+        constant_names = {
+            "DATA_API_ERROR_MESSAGE_LIMIT",
+            "DATA_API_DIAGNOSTIC_FIELD_LIMIT",
         }
         helper_nodes = []
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(
                 isinstance(target, ast.Name)
-                and target.id == "DATA_API_ERROR_MESSAGE_LIMIT"
+                and target.id in constant_names
                 for target in node.targets
             ):
                 helper_nodes.append(node)
@@ -45,6 +53,12 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
             namespace,
         )
         cls.data_api_http_failure = staticmethod(namespace["_data_api_http_failure"])
+        cls.data_api_diagnostic_failure = staticmethod(
+            namespace["_data_api_diagnostic_failure"]
+        )
+        cls.sanitize_diagnostic_field = staticmethod(
+            namespace["_sanitize_diagnostic_field"]
+        )
 
     def test_notebook_is_serverless_compatible(self) -> None:
         self.assertTrue(self.source.startswith("# Databricks notebook source"))
@@ -233,6 +247,107 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
             diagnostic_source,
         )
         self.assertIn("diagnostic_response.raise_for_status()", diagnostic_source)
+
+    def test_diagnostic_surfaces_pgrst202_function_not_found(self) -> None:
+        response = _FakeResponse(
+            400,
+            {
+                "code": "PGRST202",
+                "message": "Could not find the function public.set_embedding",
+                "detail": (
+                    "Searched for public.set_embedding(p_embedding real[], "
+                    "p_embedding_model text) in the schema cache."
+                ),
+                "hint": "Reload the schema cache.",
+            },
+            content_type="application/json; charset=utf-8",
+        )
+
+        message = str(self.data_api_diagnostic_failure(response))
+
+        self.assertIn("HTTP 400", message)
+        self.assertIn("json_keys=code,detail,hint,message", message)
+        self.assertIn("code=PGRST202", message)
+        self.assertIn("message=Could not find the function", message)
+        self.assertIn("p_embedding real[]", message)
+        self.assertIn("hint=Reload the schema cache.", message)
+
+    def test_diagnostic_preserves_22p02_text_and_redacts_vector_content(self) -> None:
+        response = _FakeResponse(
+            400,
+            {
+                "code": "22P02",
+                "message": "malformed array literal for real[]",
+                "detail": (
+                    "Function set_embedding(real[], text) rejected vector(384) "
+                    "value [0.0, -2e-3, broken, 4]."
+                ),
+                "hint": None,
+            },
+            content_type="application/json",
+        )
+
+        message = str(self.data_api_diagnostic_failure(response))
+
+        self.assertIn("code=22P02", message)
+        self.assertIn("malformed array literal for real[]", message)
+        self.assertIn("set_embedding(real[], text)", message)
+        self.assertIn("vector(384)", message)
+        self.assertIn("[redacted-array]", message)
+        self.assertNotIn("[0.0, -2e-3, broken, 4]", message)
+
+    def test_diagnostic_surfaces_p0001_and_accepts_numeric_code(self) -> None:
+        raised = _FakeResponse(
+            400,
+            {
+                "code": "P0001",
+                "message": "Embedding must contain exactly 384 values.",
+            },
+            content_type="application/json",
+        )
+        numeric = _FakeResponse(
+            400,
+            {"code": 400, "message": "Parser rejected the RPC arguments."},
+            content_type="application/json",
+        )
+
+        raised_message = str(self.data_api_diagnostic_failure(raised))
+        numeric_message = str(self.data_api_diagnostic_failure(numeric))
+
+        self.assertIn("code=P0001", raised_message)
+        self.assertIn("Embedding must contain exactly 384 values.", raised_message)
+        self.assertIn("code=400", numeric_message)
+
+    def test_diagnostic_redacts_credentials_objects_and_urls_in_place(self) -> None:
+        value = (
+            "Authorization: Bearer live-token token=abc password=hunter2 "
+            "secret=private OAuth token=oauth-value payload={\"key\":\"value\"} "
+            "see https://example.test/path?credential=value"
+        )
+
+        sanitized = self.sanitize_diagnostic_field(value)
+
+        self.assertIsNotNone(sanitized)
+        self.assertIn("Bearer [redacted]", sanitized)
+        self.assertIn("token=[redacted]", sanitized)
+        self.assertIn("password=[redacted]", sanitized)
+        self.assertIn("secret=[redacted]", sanitized)
+        self.assertIn("[redacted-object]", sanitized)
+        self.assertIn("[redacted-url]", sanitized)
+        for secret in (
+            "live-token",
+            "abc",
+            "hunter2",
+            "private",
+            "oauth-value",
+            "credential=value",
+        ):
+            self.assertNotIn(secret, sanitized)
+
+    def test_diagnostic_fields_are_bounded_after_sanitization(self) -> None:
+        sanitized = self.sanitize_diagnostic_field("x" * 700)
+
+        self.assertEqual(sanitized, "x" * 500)
 
 
 class _FakeResponse:
