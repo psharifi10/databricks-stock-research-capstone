@@ -36,13 +36,15 @@ from pyspark.sql.types import (
 from pipelines.embeddings import EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME
 
 
-DATA_API_ERROR_MESSAGE_LIMIT = 200
-DATA_API_DIAGNOSTIC_FIELD_LIMIT = 500
+DATA_API_CLIENT_ID = "626bf1da-0ff0-4af7-96f1-75ab9ca6aa08"
+DATA_API_ERROR_FIELD_LIMIT = 500
 
 
 def _safe_postgrest_code(value: object) -> str | None:
     import re
 
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
     if not isinstance(value, str):
         return None
     code = value.strip()
@@ -51,38 +53,42 @@ def _safe_postgrest_code(value: object) -> str | None:
     return code
 
 
-def _safe_postgrest_message(value: object) -> str | None:
+def _sanitize_data_api_field(value: object) -> str | None:
     import re
 
     if not isinstance(value, str):
         return None
-    message = " ".join(value.split())
-    if not message:
+    text = " ".join(value.split())
+    if not text:
         return None
 
-    numeric_array = re.compile(
-        r"\[(?:\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*,?)+\]"
+    text = re.sub(
+        r"(?i)\b(?:https?|postgres(?:ql)?):\/\/[^\s<>()]+",
+        "[redacted-url]",
+        text,
     )
-    message = numeric_array.sub("[redacted]", message)
-
-    lowered = message.lower()
-    sensitive_markers = (
-        "authorization",
-        "bearer ",
-        "oauth",
-        "token",
-        "password",
-        "secret",
-        "payload",
+    text = re.sub(
+        r"(?i)\bBearer\s+[^\s,;)\]}]+",
+        "Bearer [redacted]",
+        text,
     )
-    if any(marker in lowered for marker in sensitive_markers):
-        return None
-    if any(marker in message for marker in ("{", "}", "://")):
-        return None
-    remaining = message.replace("[]", "").replace("[redacted]", "")
-    if "[" in remaining or "]" in remaining:
-        return None
-    return message[:DATA_API_ERROR_MESSAGE_LIMIT]
+    text = re.sub(
+        r"(?i)\b(oauth(?:[_ -]?(?:token|secret))?|token|password|secret)"
+        r"(\s*(?:[:=]\s*|\s+))([^\s,;)\]}]+)",
+        r"\1\2[redacted]",
+        text,
+    )
+    for _ in range(5):
+        redacted = re.sub(r"\{[^{}]*\}", "[redacted-object]", text)
+        if redacted == text:
+            break
+        text = redacted
+    text = re.sub(
+        r"\[(?=[^\]\r\n]*\d)[^\]\r\n]*\]",
+        "[redacted-array]",
+        text,
+    )
+    return text[:DATA_API_ERROR_FIELD_LIMIT]
 
 
 def _safe_content_type(response: object) -> str:
@@ -130,16 +136,15 @@ def _data_api_response_summary(response: object) -> str:
     if json_keys:
         metadata.append(f"json_keys={','.join(json_keys)}")
 
-    code = None
     safe_fields = []
     if isinstance(body, dict):
         code = _safe_postgrest_code(body.get("code"))
-        for field in ("message", "details", "hint"):
-            value = _safe_postgrest_message(body.get(field))
+        if code is not None:
+            safe_fields.append(f"code={code}")
+        for field in ("message", "detail", "details", "hint"):
+            value = _sanitize_data_api_field(body.get(field))
             if value is not None:
                 safe_fields.append(f"{field}={value}")
-    if code is not None:
-        metadata.append(f"code={code}")
 
     summary = ", ".join(metadata)
     if safe_fields:
@@ -151,97 +156,6 @@ def _data_api_http_failure(response: object) -> RuntimeError:
     return RuntimeError(
         "Lakebase embedding persistence failed "
         f"({_data_api_response_summary(response)})"
-    )
-
-
-def _safe_diagnostic_code(value: object) -> str | None:
-    import re
-
-    if isinstance(value, int) and not isinstance(value, bool):
-        return str(value)
-    if not isinstance(value, str):
-        return None
-    code = value.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", code):
-        return None
-    return code
-
-
-def _sanitize_diagnostic_field(value: object) -> str | None:
-    import re
-
-    if not isinstance(value, str):
-        return None
-    text = " ".join(value.split())
-    if not text:
-        return None
-
-    text = re.sub(
-        r"(?i)\b(?:https?|postgres(?:ql)?):\/\/[^\s<>()]+",
-        "[redacted-url]",
-        text,
-    )
-    text = re.sub(
-        r"(?i)\bBearer\s+[^\s,;)\]}]+",
-        "Bearer [redacted]",
-        text,
-    )
-    text = re.sub(
-        r"(?i)\b(oauth(?:[_ -]?(?:token|secret))?|token|password|secret)"
-        r"(\s*(?:[:=]\s*|\s+))([^\s,;)\]}]+)",
-        r"\1\2[redacted]",
-        text,
-    )
-    for _ in range(5):
-        redacted = re.sub(r"\{[^{}]*\}", "[redacted-object]", text)
-        if redacted == text:
-            break
-        text = redacted
-    text = re.sub(
-        r"\[(?=[^\]\r\n]*\d)[^\]\r\n]*\]",
-        "[redacted-array]",
-        text,
-    )
-    return text[:DATA_API_DIAGNOSTIC_FIELD_LIMIT]
-
-
-def _data_api_diagnostic_summary(response: object) -> str:
-    raw_status = getattr(response, "status_code", None)
-    status = (
-        raw_status
-        if isinstance(raw_status, int) and not isinstance(raw_status, bool)
-        else "unknown"
-    )
-    try:
-        body = response.json()
-    except (TypeError, ValueError):
-        body = None
-
-    metadata = [f"HTTP {status}", f"content-type={_safe_content_type(response)}"]
-    json_keys = _safe_json_keys(body)
-    if json_keys:
-        metadata.append(f"json_keys={','.join(json_keys)}")
-
-    safe_fields = []
-    if isinstance(body, dict):
-        code = _safe_diagnostic_code(body.get("code"))
-        if code is not None:
-            safe_fields.append(f"code={code}")
-        for field in ("message", "detail", "hint"):
-            value = _sanitize_diagnostic_field(body.get(field))
-            if value is not None:
-                safe_fields.append(f"{field}={value}")
-
-    summary = ", ".join(metadata)
-    if safe_fields:
-        summary += ": " + "; ".join(safe_fields)
-    return summary
-
-
-def _data_api_diagnostic_failure(response: object) -> RuntimeError:
-    return RuntimeError(
-        "Data API diagnostic RPC failed "
-        f"({_data_api_diagnostic_summary(response)})"
     )
 
 
@@ -450,9 +364,23 @@ embedded_chunks = len(embedded_rows)
 
 persisted_chunks = 0
 if embedded_chunks > 0:
-    oauth_headers = workspace_client.config.authenticate()
+    data_api_client_secret = dbutils.secrets.get(
+        scope="stock-research-capstone-auth",
+        key="client-secret",
+    )
+    if not data_api_client_secret:
+        raise RuntimeError("Data API OAuth client secret is unavailable.")
+    workspace_host = workspace_client.config.host
+    if not workspace_host:
+        raise RuntimeError("Current Databricks workspace host is unavailable.")
+    data_api_client = WorkspaceClient(
+        host=workspace_host,
+        client_id=DATA_API_CLIENT_ID,
+        client_secret=data_api_client_secret,
+    )
+    oauth_headers = data_api_client.config.authenticate()
     if not any(key.lower() == "authorization" for key in oauth_headers):
-        raise RuntimeError("Databricks returned unusable workspace authentication.")
+        raise RuntimeError("Databricks returned unusable Data API authentication.")
 
     rpc_url = (
         f"{data_api_url}/public/rpc/set_news_article_chunk_embedding"
@@ -466,39 +394,6 @@ if embedded_chunks > 0:
         }
     )
     try:
-        diagnostic_row = embedded_rows[0]
-        diagnostic_payload = {
-            "p_article_id": str(diagnostic_row.article_id),
-            "p_chunk_index": int(diagnostic_row.chunk_index),
-            "p_embedding": [0.0] * EMBEDDING_DIMENSION,
-            "p_embedding_model": "phase4b-data-api-diagnostic",
-        }
-        try:
-            diagnostic_response = session.post(
-                rpc_url,
-                json=diagnostic_payload,
-                headers={"Prefer": "tx=rollback"},
-                timeout=30,
-            )
-        except requests.Timeout:
-            raise RuntimeError("Data API diagnostic RPC timed out.") from None
-        except requests.ConnectionError:
-            raise RuntimeError(
-                "Data API diagnostic RPC connection failed."
-            ) from None
-        except requests.RequestException:
-            raise RuntimeError("Data API diagnostic RPC request failed.") from None
-        try:
-            diagnostic_response.raise_for_status()
-        except requests.HTTPError:
-            raise _data_api_diagnostic_failure(diagnostic_response) from None
-
-        print(
-            "Data API diagnostic response: "
-            f"{_data_api_diagnostic_summary(diagnostic_response)}"
-        )
-        raise RuntimeError("Data API diagnostic RPC succeeded.")
-
         for row in embedded_rows:
             payload = {
                 "p_article_id": str(row.article_id),

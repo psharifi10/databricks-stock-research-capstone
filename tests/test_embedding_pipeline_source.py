@@ -19,19 +19,14 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         tree = ast.parse(cls.source)
         helper_names = {
             "_safe_postgrest_code",
-            "_safe_postgrest_message",
+            "_sanitize_data_api_field",
             "_safe_content_type",
             "_safe_json_keys",
             "_data_api_response_summary",
             "_data_api_http_failure",
-            "_safe_diagnostic_code",
-            "_sanitize_diagnostic_field",
-            "_data_api_diagnostic_summary",
-            "_data_api_diagnostic_failure",
         }
         constant_names = {
-            "DATA_API_ERROR_MESSAGE_LIMIT",
-            "DATA_API_DIAGNOSTIC_FIELD_LIMIT",
+            "DATA_API_ERROR_FIELD_LIMIT",
         }
         helper_nodes = []
         for node in tree.body:
@@ -53,11 +48,8 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
             namespace,
         )
         cls.data_api_http_failure = staticmethod(namespace["_data_api_http_failure"])
-        cls.data_api_diagnostic_failure = staticmethod(
-            namespace["_data_api_diagnostic_failure"]
-        )
-        cls.sanitize_diagnostic_field = staticmethod(
-            namespace["_sanitize_diagnostic_field"]
+        cls.sanitize_data_api_field = staticmethod(
+            namespace["_sanitize_data_api_field"]
         )
 
     def test_notebook_is_serverless_compatible(self) -> None:
@@ -109,7 +101,7 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         self.assertNotIn("/Repos", self.source)
 
     def test_data_api_rpc_updates_existing_rows_without_exposing_values(self) -> None:
-        self.assertIn("workspace_client.config.authenticate()", self.source)
+        self.assertIn("data_api_client.config.authenticate()", self.source)
         self.assertIn("/public/rpc/set_news_article_chunk_embedding", self.source)
         self.assertIn('"p_article_id"', self.source)
         self.assertIn('"p_chunk_index"', self.source)
@@ -136,14 +128,14 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         self.assertEqual(
             str(error),
             "Lakebase embedding persistence failed (HTTP 403, "
-            "content-type=application/json, json_keys=code,message, "
-            "code=42501: message=permission denied for function)",
+            "content-type=application/json, json_keys=code,message: "
+            "code=42501; message=permission denied for function)",
         )
 
     def test_data_api_error_message_is_bounded(self) -> None:
         response = _FakeResponse(
             404,
-            {"code": "PGRST202", "message": "x" * 500},
+            {"code": "PGRST202", "message": "x" * 700},
             content_type="application/json; charset=utf-8",
         )
 
@@ -152,7 +144,7 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         self.assertIn("HTTP 404", message)
         self.assertIn("code=PGRST202", message)
         self.assertIn("content-type=application/json; charset=utf-8", message)
-        self.assertTrue(message.endswith(f"message={'x' * 200})"))
+        self.assertTrue(message.endswith(f"message={'x' * 500})"))
 
     def test_data_api_error_never_surfaces_sensitive_or_structured_message(self) -> None:
         sensitive = (
@@ -167,17 +159,14 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
 
         message = str(self.data_api_http_failure(response))
 
-        self.assertEqual(
-            message,
-            "Lakebase embedding persistence failed (HTTP 403, "
-            "content-type=application/json, json_keys=code,message, "
-            "code=42501)",
-        )
+        self.assertIn("code=42501", message)
+        self.assertIn("Bearer [redacted]", message)
+        self.assertIn("[redacted-array]", message)
+        self.assertIn("[redacted-object]", message)
         for forbidden in (
-            "Authorization",
             "oauth-token-secret",
             "[0.1,0.2]",
-            "payload",
+            "private",
         ):
             self.assertNotIn(forbidden, message)
 
@@ -205,7 +194,7 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
             400,
             {
                 "code": "42804",
-                "details": (
+                "detail": (
                     "argument p_embedding has type real[] but numeric value "
                     "[0.1, -2e-3, 3] was rejected"
                 ),
@@ -216,138 +205,91 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
 
         message = str(self.data_api_http_failure(response))
 
-        self.assertIn("json_keys=code,details,hint", message)
+        self.assertIn("json_keys=code,detail,hint", message)
         self.assertIn("real[]", message)
-        self.assertIn("[redacted]", message)
+        self.assertIn("[redacted-array]", message)
         self.assertNotIn("[0.1, -2e-3, 3]", message)
         self.assertIn("hint=Use the declared RPC argument type.", message)
 
-    def test_rollback_diagnostic_runs_once_before_normal_persistence(self) -> None:
-        diagnostic_start = self.source.index("diagnostic_row = embedded_rows[0]")
-        normal_loop = self.source.index("for row in embedded_rows:", diagnostic_start)
-        diagnostic_source = self.source[diagnostic_start:normal_loop]
-
-        self.assertEqual(diagnostic_source.count("session.post("), 1)
-        self.assertIn('headers={"Prefer": "tx=rollback"}', diagnostic_source)
-        self.assertIn(
-            '"p_article_id": str(diagnostic_row.article_id)',
-            diagnostic_source,
-        )
-        self.assertIn(
-            '"p_chunk_index": int(diagnostic_row.chunk_index)',
-            diagnostic_source,
-        )
-        self.assertIn('"p_embedding": [0.0] * EMBEDDING_DIMENSION', diagnostic_source)
-        self.assertIn(
-            '"p_embedding_model": "phase4b-data-api-diagnostic"',
-            diagnostic_source,
-        )
-        self.assertIn(
-            'raise RuntimeError("Data API diagnostic RPC succeeded.")',
-            diagnostic_source,
-        )
-        self.assertIn("diagnostic_response.raise_for_status()", diagnostic_source)
-
-    def test_diagnostic_surfaces_pgrst202_function_not_found(self) -> None:
+    def test_data_api_error_accepts_numeric_postgrest_code(self) -> None:
         response = _FakeResponse(
-            400,
-            {
-                "code": "PGRST202",
-                "message": "Could not find the function public.set_embedding",
-                "detail": (
-                    "Searched for public.set_embedding(p_embedding real[], "
-                    "p_embedding_model text) in the schema cache."
-                ),
-                "hint": "Reload the schema cache.",
-            },
-            content_type="application/json; charset=utf-8",
-        )
-
-        message = str(self.data_api_diagnostic_failure(response))
-
-        self.assertIn("HTTP 400", message)
-        self.assertIn("json_keys=code,detail,hint,message", message)
-        self.assertIn("code=PGRST202", message)
-        self.assertIn("message=Could not find the function", message)
-        self.assertIn("p_embedding real[]", message)
-        self.assertIn("hint=Reload the schema cache.", message)
-
-    def test_diagnostic_preserves_22p02_text_and_redacts_vector_content(self) -> None:
-        response = _FakeResponse(
-            400,
-            {
-                "code": "22P02",
-                "message": "malformed array literal for real[]",
-                "detail": (
-                    "Function set_embedding(real[], text) rejected vector(384) "
-                    "value [0.0, -2e-3, broken, 4]."
-                ),
-                "hint": None,
-            },
-            content_type="application/json",
-        )
-
-        message = str(self.data_api_diagnostic_failure(response))
-
-        self.assertIn("code=22P02", message)
-        self.assertIn("malformed array literal for real[]", message)
-        self.assertIn("set_embedding(real[], text)", message)
-        self.assertIn("vector(384)", message)
-        self.assertIn("[redacted-array]", message)
-        self.assertNotIn("[0.0, -2e-3, broken, 4]", message)
-
-    def test_diagnostic_surfaces_p0001_and_accepts_numeric_code(self) -> None:
-        raised = _FakeResponse(
-            400,
-            {
-                "code": "P0001",
-                "message": "Embedding must contain exactly 384 values.",
-            },
-            content_type="application/json",
-        )
-        numeric = _FakeResponse(
             400,
             {"code": 400, "message": "Parser rejected the RPC arguments."},
             content_type="application/json",
         )
 
-        raised_message = str(self.data_api_diagnostic_failure(raised))
-        numeric_message = str(self.data_api_diagnostic_failure(numeric))
+        message = str(self.data_api_http_failure(response))
 
-        self.assertIn("code=P0001", raised_message)
-        self.assertIn("Embedding must contain exactly 384 values.", raised_message)
-        self.assertIn("code=400", numeric_message)
+        self.assertIn("code=400", message)
 
-    def test_diagnostic_redacts_credentials_objects_and_urls_in_place(self) -> None:
-        value = (
-            "Authorization: Bearer live-token token=abc password=hunter2 "
-            "secret=private OAuth token=oauth-value payload={\"key\":\"value\"} "
-            "see https://example.test/path?credential=value"
+    def test_data_api_uses_secret_backed_explicit_m2m_authentication(self) -> None:
+        self.assertIn("workspace_client = WorkspaceClient()", self.source)
+        self.assertIn(
+            'DATA_API_CLIENT_ID = "626bf1da-0ff0-4af7-96f1-75ab9ca6aa08"',
+            self.source,
         )
+        self.assertIn(
+            "data_api_client_secret = dbutils.secrets.get(",
+            self.source,
+        )
+        self.assertIn('scope="stock-research-capstone-auth"', self.source)
+        self.assertIn('key="client-secret"', self.source)
+        self.assertIn("workspace_host = workspace_client.config.host", self.source)
+        self.assertIn("data_api_client = WorkspaceClient(", self.source)
+        self.assertIn("host=workspace_host", self.source)
+        self.assertIn("client_id=DATA_API_CLIENT_ID", self.source)
+        self.assertIn("client_secret=data_api_client_secret", self.source)
+        self.assertIn(
+            "oauth_headers = data_api_client.config.authenticate()",
+            self.source,
+        )
+        self.assertNotIn("/oidc/v1/token", self.source)
 
-        sanitized = self.sanitize_diagnostic_field(value)
-
-        self.assertIsNotNone(sanitized)
-        self.assertIn("Bearer [redacted]", sanitized)
-        self.assertIn("token=[redacted]", sanitized)
-        self.assertIn("password=[redacted]", sanitized)
-        self.assertIn("secret=[redacted]", sanitized)
-        self.assertIn("[redacted-object]", sanitized)
-        self.assertIn("[redacted-url]", sanitized)
-        for secret in (
-            "live-token",
-            "abc",
-            "hunter2",
-            "private",
-            "oauth-value",
-            "credential=value",
+    def test_diagnostic_removed_and_production_rows_persisted(self) -> None:
+        for removed in (
+            "diagnostic_row",
+            "diagnostic_payload",
+            "phase4b-data-api-diagnostic",
+            '"Prefer": "tx=rollback"',
+            "Data API diagnostic RPC",
         ):
-            self.assertNotIn(secret, sanitized)
+            self.assertNotIn(removed, self.source)
 
-    def test_diagnostic_fields_are_bounded_after_sanitization(self) -> None:
-        sanitized = self.sanitize_diagnostic_field("x" * 700)
+        loop_start = self.source.index("for row in embedded_rows:")
+        persistence_source = self.source[loop_start:]
+        self.assertIn('"p_article_id": str(row.article_id)', persistence_source)
+        self.assertIn('"p_chunk_index": int(row.chunk_index)', persistence_source)
+        self.assertIn(
+            '"p_embedding": [float(value) for value in row.embedding]',
+            persistence_source,
+        )
+        self.assertIn(
+            '"p_embedding_model": str(row.embedding_model)',
+            persistence_source,
+        )
+        self.assertIn(
+            "response = session.post(rpc_url, json=payload, timeout=30)",
+            persistence_source,
+        )
+        self.assertIn("persisted_chunks += 1", persistence_source)
 
-        self.assertEqual(sanitized, "x" * 500)
+    def test_m2m_secret_and_authentication_values_are_never_printed(self) -> None:
+        self.assertIsNone(
+            re.search(
+                r"(?:print|display)\([^\n)]*"
+                r"(?:data_api_client_secret|oauth_headers|authorization)",
+                self.source,
+                flags=re.IGNORECASE,
+            )
+        )
+        self.assertNotIn(
+            'dbutils.widgets.text("client_secret"',
+            self.source,
+        )
+        self.assertNotIn(
+            'dbutils.widgets.text("client-secret"',
+            self.source,
+        )
 
 
 class _FakeResponse:
