@@ -300,7 +300,9 @@ The existing `mcp-stock-research` Databricks App serves the dashboard, determini
 - `/api/research` validates a ticker and question, then delegates directly to `ResearchContextService`.
 - `/api/agent` sends a grounded prompt to the configured Supervisor Agent model-serving endpoint.
 
-The dashboard presents the Supervisor's synthesized answer separately above persisted company metadata, the latest close and bounded recent prices, ticker-linked recent news, and citation-ready semantic evidence. If Supervisor synthesis is unavailable, deterministic grounded research still renders. Browser rendering uses DOM `textContent`; external sources are limited to HTTP(S) links with `target="_blank"` and `rel="noopener noreferrer"`. The frontend receives no vectors, credentials, raw source payloads, or OAuth configuration. The Supervisor dashboard integration is implemented but is not claimed as live-validated until the updated app is deployed and tested.
+The dashboard presents the Supervisor's synthesized answer separately above persisted company metadata, the latest close and bounded recent prices, ticker-linked recent news, and citation-ready semantic evidence. If Supervisor synthesis is unavailable, deterministic grounded research still renders. Browser rendering uses DOM `textContent`; external sources are limited to HTTP(S) links with `target="_blank"` and `rel="noopener noreferrer"`. The frontend receives no vectors, credentials, raw source payloads, or OAuth configuration.
+
+The Databricks App dashboard was live-validated end to end with the deployed Supervisor Agent. A stock-news question triggered the Supervisor, automatically approved the allowlisted read-only MCP request, executed the stock research MCP tools, and returned a final grounded synthesis to the dashboard.
 
 ## Final architecture
 
@@ -336,7 +338,7 @@ Massive supplies third-party company, price, and news facts. Spark processes uns
 
 ## AI client and agent status
 
-A Databricks Supervisor Agent named `Stock Research Assistant` was created, and `mcp-stock-research` was registered as its custom MCP tool. Live validation confirmed that the Supervisor selected `build_research_context` for an Apple research question and selected `add_to_watchlist` for an explicit watchlist action. It correctly respected the idempotent no-op result when AAPL was already present. The Databricks App dashboard now integrates with the Supervisor endpoint in source for synthesized responses, while grounded structured research remains separately visible through `ResearchContextService`. This dashboard-to-Supervisor integration still requires deployment and live validation.
+A Databricks Supervisor Agent named `Stock Research Assistant` was created, and `mcp-stock-research` was registered as its custom MCP tool. Live validation confirmed that the Supervisor selected `build_research_context` for an Apple research question and selected `add_to_watchlist` for an explicit watchlist action. It correctly respected the idempotent no-op result when AAPL was already present. The deployed Databricks App dashboard also completed the full Supervisor approval and tool-execution loop for a stock-news question, returned the final grounded synthesis, and kept deterministic structured research separately visible through `ResearchContextService`.
 
 ## Live MCP validation
 
@@ -354,6 +356,7 @@ The following deployed behaviors were validated without recording personal email
 ## Validation Evidence
 
 - [Successful Databricks App research dashboard query](evidence/dashboard_query.png)
+- [Successful end-to-end Supervisor dashboard query](evidence/dashboard_supervisor_query.png)
 
 ## Rubric alignment
 
@@ -363,7 +366,7 @@ The following deployed behaviors were validated without recording personal email
 - [x] Lakebase relational tables — ten normalized application/research entities
 - [x] Embeddings, vector retrieval, and RAG context — MiniLM, cosine search, and `ResearchContextService`
 - [x] AI read/write tool use — Supervisor-selected MCP retrieval and explicit write actions
-- [x] Databricks App frontend — deterministic research validated live; Supervisor summary integration implemented with redeployment and live validation pending
+- [x] Databricks App frontend — deterministic research and end-to-end Supervisor synthesis validated live
 
 ## Submission hygiene
 
@@ -421,7 +424,7 @@ The repository ignores local virtual environments, `.env` files, Python and test
 - Register the MCP server as the Supervisor Agent's custom tool.
 - Validate Supervisor-selected grounded retrieval and explicit write-tool execution.
 
-### Phase 8 — Frontend implementation (complete; redeployment pending)
+### Phase 8 — Frontend implementation (complete and live-validated)
 
 - Serve a compact research interface from the existing FastMCP Databricks App.
 - Reuse `ResearchContextService` for company, price, news, and semantic evidence.
@@ -432,7 +435,7 @@ The repository ignores local virtual environments, `.env` files, Python and test
 
 - Record final architecture, live validation status, and rubric alignment.
 - Review privacy, secret handling, ignored local artifacts, and safe failure paths.
-- Keep final deployment and submission packaging as explicit operator steps.
+- Keep future redeployments and submission packaging as explicit operator steps.
 
 ## Repository layout
 
