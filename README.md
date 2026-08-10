@@ -349,6 +349,10 @@ The following deployed behaviors were validated without recording personal email
 - `save_research_note` completed successfully and returned `note_id` 1.
 - `remove_from_watchlist` was callable and executed correctly; no claim is made that a row was removed when the result was `removed=false`.
 
+## Validation Evidence
+
+- [Successful Databricks App research dashboard query](evidence/dashboard_query.png)
+
 ## Rubric alignment
 
 - [x] Spark pipeline — bounded Serverless extraction, chunking, and embedding workflows
