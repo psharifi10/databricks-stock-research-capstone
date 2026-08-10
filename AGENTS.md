@@ -92,3 +92,10 @@ Do not add:
   5. unresolved issues
   6. recommended next step
 - Never commit or push unless explicitly told to do so.
+
+# Validation environment
+
+- Never assume `.venv` is portable across Codex execution environments; prefer it only when executable.
+- If `.venv` is unusable, discover an available Python interpreter, create/use `.codex-venv`, and install project requirements there when needed.
+- Do not skip the full test suite solely because `.venv` is unusable when another interpreter is available.
+- Never alter or delete the user's `.venv` as part of the Codex fallback.

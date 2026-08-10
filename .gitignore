@@ -9,6 +9,7 @@ secrets.json
 
 # Python environments and caches
 .venv/
+.codex-venv/
 venv/
 env/
 __pycache__/
