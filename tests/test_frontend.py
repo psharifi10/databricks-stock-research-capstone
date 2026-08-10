@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import warnings
 
 from starlette.exceptions import StarletteDeprecationWarning
@@ -81,15 +81,24 @@ class FrontendRouteTests(unittest.TestCase):
             "Supervisor-generated grounded answer."
         )
 
-        response = self.client.post(
-            "/api/agent",
-            json={
-                "ticker": " aapl ",
-                "question": "  What changed in the outlook?  ",
-            },
+        to_thread = AsyncMock(
+            side_effect=lambda operation, *args: operation(*args)
         )
+        with patch.object(server.asyncio, "to_thread", new=to_thread):
+            response = self.client.post(
+                "/api/agent",
+                json={
+                    "ticker": " aapl ",
+                    "question": "  What changed in the outlook?  ",
+                },
+            )
 
         self.assertEqual(response.status_code, 200)
+        to_thread.assert_awaited_once()
+        self.assertIs(
+            to_thread.await_args.args[0],
+            self.agent_client.generate_response,
+        )
         prompt = self.agent_client.generate_response.call_args.args[0]
         self.assertIn("Research ticker AAPL.", prompt)
         self.assertIn("User question:\nWhat changed in the outlook?", prompt)
@@ -137,6 +146,24 @@ class FrontendRouteTests(unittest.TestCase):
         self.assertNotIn("private", str(payload).lower())
         self.assertNotIn("endpoint", str(payload).lower())
 
+    def test_agent_timeout_returns_safe_503(self) -> None:
+        self.agent_client.generate_response.return_value = "Too late"
+
+        with patch.object(server, "AGENT_TIMEOUT_SECONDS", 0):
+            response = self.client.post(
+                "/api/agent",
+                json={"ticker": "AAPL", "question": "What changed?"},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.json()
+        self.assertEqual(payload["error"]["type"], "agent_unavailable")
+        self.assertEqual(
+            payload["error"]["message"],
+            "The AI research summary is temporarily unavailable.",
+        )
+        self.assertNotIn("timeout", str(payload).lower())
+
     def test_unexpected_agent_failure_returns_sanitized_500(self) -> None:
         self.agent_client.generate_response.side_effect = RuntimeError(
             "private workspace and credential detail"
@@ -170,12 +197,21 @@ class FrontendRouteTests(unittest.TestCase):
             ],
         }
 
-        response = self.client.post(
-            "/api/research",
-            json={"ticker": " aapl ", "question": "  What changed?  "},
+        to_thread = AsyncMock(
+            side_effect=lambda operation, *args: operation(*args)
         )
+        with patch.object(server.asyncio, "to_thread", new=to_thread):
+            response = self.client.post(
+                "/api/research",
+                json={"ticker": " aapl ", "question": "  What changed?  "},
+            )
 
         self.assertEqual(response.status_code, 200)
+        to_thread.assert_awaited_once()
+        self.assertIs(
+            to_thread.await_args.args[0],
+            self.research_context.build_research_context,
+        )
         self.research_context.build_research_context.assert_called_once_with(
             " aapl ",
             "  What changed?  ",
@@ -259,6 +295,56 @@ class FrontendAssetSafetyTests(unittest.TestCase):
         self.assertIn("AI summary is temporarily unavailable", script)
         self.assertIn("renderResearch(researchOutcome.value)", script)
         self.assertIn("agentAnswer.textContent", script)
+
+    def test_html_gateway_errors_are_sanitized_without_reading_body(self) -> None:
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        message = "The research service is temporarily unavailable."
+
+        self.assertIn('response.headers.get("Content-Type")', script)
+        self.assertIn('includes("application/json")', script)
+        self.assertIn(message, script)
+        self.assertNotIn("response.text()", script)
+        self.assertLess(
+            script.index('includes("application/json")'),
+            script.index("response.json()"),
+        )
+        for status in (502, 503, 504):
+            with self.subTest(status=status):
+                self.assertNotIn(f"response.status === {status}", script)
+
+    def test_malformed_json_uses_sanitized_error(self) -> None:
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        parse_start = script.index("try {\n    payload = await response.json();")
+        parse_end = script.index("\n  }\n  if (!response.ok", parse_start)
+        parse_boundary = script[parse_start:parse_end]
+
+        self.assertIn("catch (_error)", parse_boundary)
+        self.assertIn("RESEARCH_SERVICE_UNAVAILABLE_MESSAGE", parse_boundary)
+        self.assertNotIn("_error.message", parse_boundary)
+        self.assertNotIn("Unexpected token", script)
+
+    def test_valid_json_success_and_structured_errors_are_preserved(self) -> None:
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("if (!response.ok || !payload?.ok)", script)
+        self.assertIn("payload?.error?.message", script)
+        self.assertIn("return payload.data", script)
+
+    def test_agent_request_has_an_independent_browser_timeout(self) -> None:
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const AGENT_REQUEST_TIMEOUT_MS = 65000", script)
+        self.assertIn("new AbortController()", script)
+        self.assertIn("() => controller.abort()", script)
+        self.assertIn(
+            'requestResearch("/api/agent", body, controller.signal)',
+            script,
+        )
+        self.assertIn('requestResearch("/api/research", requestBody)', script)
+        self.assertNotIn(
+            'requestResearch("/api/research", requestBody,',
+            script,
+        )
 
     def test_frontend_assets_contain_no_credentials_or_vectors(self) -> None:
         source = "\n".join(

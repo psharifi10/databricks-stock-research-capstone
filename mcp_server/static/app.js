@@ -14,6 +14,9 @@ const priceRows = document.querySelector("#price-rows");
 const priceEmpty = document.querySelector("#price-empty");
 const newsList = document.querySelector("#news-list");
 const evidenceList = document.querySelector("#evidence-list");
+const AGENT_REQUEST_TIMEOUT_MS = 65000;
+const RESEARCH_SERVICE_UNAVAILABLE_MESSAGE =
+  "The research service is temporarily unavailable.";
 
 function createElement(tagName, className, text) {
   const element = document.createElement(tagName);
@@ -239,19 +242,46 @@ function renderAgentSummary(answer, unavailable = false) {
   agentAnswer.classList.toggle("agent-answer--unavailable", unavailable);
 }
 
-async function requestResearch(path, body) {
-  const response = await fetch(path, {
+async function requestResearch(path, body, signal) {
+  const requestOptions = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
-  const payload = await response.json();
-  if (!response.ok || !payload.ok) {
+  };
+  if (signal) {
+    requestOptions.signal = signal;
+  }
+  const response = await fetch(path, requestOptions);
+  const contentType = response.headers.get("Content-Type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    throw new Error(RESEARCH_SERVICE_UNAVAILABLE_MESSAGE);
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_error) {
+    throw new Error(RESEARCH_SERVICE_UNAVAILABLE_MESSAGE);
+  }
+  if (!response.ok || !payload?.ok) {
     throw new Error(
       payload?.error?.message || "Research could not be completed right now.",
     );
   }
   return payload.data;
+}
+
+async function requestAgentResearch(body) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(
+    () => controller.abort(),
+    AGENT_REQUEST_TIMEOUT_MS,
+  );
+  try {
+    return await requestResearch("/api/agent", body, controller.signal);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 function setLoading(isLoading) {
@@ -285,7 +315,7 @@ form.addEventListener("submit", async (event) => {
   try {
     const requestBody = { ticker, question };
     const [agentOutcome, researchOutcome] = await Promise.allSettled([
-      requestResearch("/api/agent", requestBody),
+      requestAgentResearch(requestBody),
       requestResearch("/api/research", requestBody),
     ]);
 

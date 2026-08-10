@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -43,6 +44,7 @@ from mcp_server.frontend import load_static_asset
 
 
 mcp = FastMCP("Stock Research MCP")
+AGENT_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -194,7 +196,8 @@ async def research_api(request: Request) -> Response:
     try:
         if not isinstance(payload, Mapping):
             raise ValidationError("A JSON object is required.")
-        context = get_services().research_context.build_research_context(
+        context = await asyncio.to_thread(
+            get_services().research_context.build_research_context,
             payload.get("ticker"),
             payload.get("question"),
         )
@@ -241,7 +244,13 @@ async def agent_api(request: Request) -> Response:
             "Use the available stock research MCP tools when evidence is needed.\n"
             "Base the answer only on available evidence."
         )
-        answer = get_agent_client().generate_response(prompt)
+        answer = await asyncio.wait_for(
+            asyncio.to_thread(
+                get_agent_client().generate_response,
+                prompt,
+            ),
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
         return JSONResponse(
             _success(
                 {
@@ -255,7 +264,7 @@ async def agent_api(request: Request) -> Response:
             _error("validation_error", str(error)),
             status_code=400,
         )
-    except AgentServiceError:
+    except (AgentServiceError, asyncio.TimeoutError):
         return JSONResponse(
             _error(
                 "agent_unavailable",
