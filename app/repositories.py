@@ -327,6 +327,43 @@ class StockRepository:
                 )
                 return [dict(row) for row in cursor.fetchall()]
 
+    def replace_news_article_chunks(
+        self,
+        article_id: str,
+        chunks: Sequence[str],
+    ) -> int:
+        """Atomically delete stale chunks and insert deterministic replacements."""
+
+        normalized_article_id = str(article_id or "").strip()
+        if not normalized_article_id:
+            raise RepositoryError("A news article ID is required.")
+
+        replacements: list[tuple[str, int, str]] = []
+        for chunk_index, chunk in enumerate(chunks):
+            if not isinstance(chunk, str) or not chunk.strip():
+                raise RepositoryError("News article chunks cannot be blank.")
+            replacements.append(
+                (normalized_article_id, chunk_index, chunk.strip())
+            )
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM news_article_chunks WHERE article_id = %s",
+                    (normalized_article_id,),
+                )
+                if replacements:
+                    cursor.executemany(
+                        """
+                        INSERT INTO news_article_chunks (
+                            article_id, chunk_index, chunk_text
+                        )
+                        VALUES (%s, %s, %s)
+                        """,
+                        replacements,
+                    )
+        return len(replacements)
+
     def _get_or_create_default_watchlist(
         self,
         cursor: Any,

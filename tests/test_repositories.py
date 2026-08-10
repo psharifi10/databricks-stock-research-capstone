@@ -239,6 +239,42 @@ class StockRepositoryTests(unittest.TestCase):
         self.assertEqual(parameters, ("MSFT", 5))
         self.assertEqual(rows[0]["sentiment"], "negative")
 
+    def test_replace_news_chunks_deletes_stale_rows_before_inserting(self) -> None:
+        count = self.repository.replace_news_article_chunks(
+            " article-1 ",
+            ["First chunk", "Second chunk"],
+        )
+
+        delete_sql, delete_parameters = self.cursor.execute.call_args.args
+        self.assertEqual(
+            _compact_sql(delete_sql),
+            "DELETE FROM news_article_chunks WHERE article_id = %s",
+        )
+        self.assertEqual(delete_parameters, ("article-1",))
+        insert_sql, insert_parameters = self.cursor.executemany.call_args.args
+        self.assertIn("INSERT INTO news_article_chunks", _compact_sql(insert_sql))
+        self.assertEqual(
+            [call[0] for call in self.cursor.method_calls],
+            ["execute", "executemany"],
+        )
+        self.assertEqual(
+            insert_parameters,
+            [
+                ("article-1", 0, "First chunk"),
+                ("article-1", 1, "Second chunk"),
+            ],
+        )
+        self.assertEqual(count, 2)
+
+    def test_empty_chunk_replacement_only_deletes_stale_rows(self) -> None:
+        count = self.repository.replace_news_article_chunks("article-1", [])
+
+        delete_sql, delete_parameters = self.cursor.execute.call_args.args
+        self.assertIn("DELETE FROM news_article_chunks", _compact_sql(delete_sql))
+        self.assertEqual(delete_parameters, ("article-1",))
+        self.cursor.executemany.assert_not_called()
+        self.assertEqual(count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

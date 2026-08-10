@@ -135,6 +135,45 @@ The live validation scripts are:
 - `scripts/refresh_stock_data.py` for the bounded Massive-to-Lakebase refresh
 - `scripts/verify_stock_data.py` for database-only counts and relational checks
 
+## Phase 4A Spark article extraction and chunking
+
+Phase 4A begins with persisted news rather than calling Massive from Spark:
+
+```text
+news_articles
+      |
+      v
+Spark JDBC read
+      |
+      v
+LEFT ANTI JOIN against processed article IDs
+      |
+      v
+distributed webpage extraction (mapInPandas)
+      |
+      v
+trafilatura main-content extraction
+      |
+      +---- blocked/unavailable/short page
+      |                 |
+      |                 v
+      |        persisted title/description fallback
+      |                 |
+      +-----------------+
+               |
+               v
+deterministic overlapping chunks
+               |
+               v
+news_article_chunks
+```
+
+Publisher sites can legitimately block or restrict automated retrieval. When a body cannot be accessed or extracted, the already-ingested Massive title and description remain grounded unstructured source text, so the bounded Spark job uses them rather than fabricating content or failing the whole batch. Articles with no usable body or metadata are skipped.
+
+The Databricks notebook source is `pipelines/process_news_content.py`. Spark performs bounded distributed extraction and chunk generation, then the small final chunk set is collected to the driver and persisted per article through an atomic delete-and-replace repository operation. This keeps stale chunks from earlier versions from surviving without introducing a complex distributed database writer.
+
+Embeddings, vector storage, semantic search, and RAG are intentionally deferred to Phase 4B. The Phase 4A notebook has not yet been live-validated in a Databricks Spark runtime.
+
 ## Proposed architecture
 
 ```text
@@ -207,18 +246,16 @@ The frontend and MCP server are separate deployment units. Shared business rules
 - Confirm normalized multi-ticker news relationships and ticker-specific sentiment.
 - Confirm idempotent repeated refreshes without duplicate company, price, article, or association rows.
 
-### Phase 3 — Spark news and embedding pipeline
+### Phase 4A — Spark article extraction and chunking (offline implementation)
 
-- Ingest financial-news documents for selected companies.
-- Extract and normalize article text while preserving URL, publisher, ticker, and publication metadata.
-- Chunk text, generate embeddings, and idempotently upsert documents and vectors into Lakebase/pgvector.
-- Package the pipeline as a repeatable Databricks workflow.
+- Read bounded, unprocessed news from Lakebase through Spark JDBC and an anti join.
+- Extract article bodies through partition-scoped HTTP sessions and trafilatura, with metadata fallback.
+- Generate deterministic overlapping chunks and atomically replace each article's persisted chunks.
 
-### Phase 4 — Semantic retrieval
+### Phase 4B — Embeddings and semantic retrieval (planned)
 
-- Implement bounded top-k vector search with metadata filters and relevance scores.
-- Return citation-ready source metadata with every retrieved chunk.
-- Test deterministic parsing, validation, and retrieval contracts.
+- Select and validate the embedding model and storage extension.
+- Add vector persistence and bounded citation-ready semantic retrieval.
 
 ### Phase 5 — MCP server and agent integration
 
