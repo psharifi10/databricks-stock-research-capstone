@@ -143,7 +143,7 @@ Phase 4A begins with persisted news rather than calling Massive from Spark:
 news_articles
       |
       v
-Spark JDBC read
+Spark PostgreSQL/JDBC read
       |
       v
 LEFT ANTI JOIN against processed article IDs
@@ -165,14 +165,17 @@ trafilatura main-content extraction
 deterministic overlapping chunks
                |
                v
+bundled PostgreSQL Spark writer
+               |
+               v
 news_article_chunks
 ```
 
 Publisher sites can legitimately block or restrict automated retrieval. When a body cannot be accessed or extracted, the already-ingested Massive title and description remain grounded unstructured source text, so the bounded Spark job uses them rather than fabricating content or failing the whole batch. Articles with no usable body or metadata are skipped.
 
-The Databricks notebook source is `pipelines/process_news_content.py`. Spark performs bounded distributed extraction and chunk generation, then the small final chunk set is collected to the driver and persisted per article through prepared JDBC delete-and-insert transactions. This keeps stale chunks from earlier versions from surviving without introducing a complex distributed database writer.
+The Databricks notebook source is `pipelines/process_news_content.py`. On Databricks Serverless, Spark performs bounded distributed extraction and chunk generation, then writes the materialized chunk DataFrame through the bundled PostgreSQL Spark data source into `news_article_chunks`. Append mode is safe in this pipeline because the left anti join selects only article IDs with no existing chunks; already-processed articles are excluded before extraction.
 
-The local application continues to use psycopg through `app/db.py`. The Databricks Spark pipeline uses PostgreSQL JDBC directly for both Lakebase reads and bounded writes, avoiding a native psycopg/libpq dependency in the Databricks Python process.
+The local application continues to use psycopg and repository-level replacement semantics through `app/db.py` and `app/repositories.py`. The Databricks Spark pipeline uses Spark PostgreSQL/JDBC reads and the bundled PostgreSQL writer, avoiding native psycopg and direct-JVM dependencies in the Databricks Python process.
 
 Embeddings, vector storage, semantic search, and RAG are intentionally deferred to Phase 4B. The Phase 4A notebook has not yet been live-validated in a Databricks Spark runtime.
 
@@ -252,7 +255,7 @@ The frontend and MCP server are separate deployment units. Shared business rules
 
 - Read bounded, unprocessed news from Lakebase through Spark JDBC and an anti join.
 - Extract article bodies through partition-scoped HTTP sessions and trafilatura, with metadata fallback.
-- Generate deterministic overlapping chunks and atomically replace each article's persisted chunks.
+- Generate deterministic overlapping chunks and append only chunks whose article IDs passed the unprocessed-article anti join.
 
 ### Phase 4B — Embeddings and semantic retrieval (planned)
 

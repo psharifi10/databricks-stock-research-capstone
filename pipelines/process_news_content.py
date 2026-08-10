@@ -5,7 +5,7 @@
 # MAGIC This bounded Spark pipeline reads already-ingested `news_articles` from
 # MAGIC Lakebase, skips article IDs that already have chunks, performs distributed
 # MAGIC webpage extraction with metadata fallback, creates deterministic chunks,
-# MAGIC and persists them through bounded JDBC transactions.
+# MAGIC and appends them through Databricks' bundled PostgreSQL Spark writer.
 # MAGIC
 # MAGIC It does not call Massive and it does not generate embeddings.
 
@@ -19,7 +19,6 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-from collections import defaultdict
 from collections.abc import Iterator
 import pandas as pd
 
@@ -229,16 +228,20 @@ partition_count = max(1, min(fetch_partitions, eligible_count or 1))
 extracted_articles_df = (
     eligible_articles_df.repartition(partition_count)
     .mapInPandas(extract_article_partitions, schema=extracted_schema)
-    .cache()
 )
 
-extracted_count = extracted_articles_df.count()
-article_body_count = extracted_articles_df.filter(
-    F.col("extraction_source") == "article_body"
-).count()
-metadata_fallback_count = extracted_articles_df.filter(
-    F.col("extraction_source") == "metadata_fallback"
-).count()
+extracted_rows = extracted_articles_df.collect()
+materialized_extracted_articles_df = spark.createDataFrame(
+    extracted_rows,
+    schema=extracted_schema,
+)
+extracted_count = len(extracted_rows)
+article_body_count = sum(
+    row.extraction_source == "article_body" for row in extracted_rows
+)
+metadata_fallback_count = sum(
+    row.extraction_source == "metadata_fallback" for row in extracted_rows
+)
 skipped_count = eligible_count - extracted_count
 
 
@@ -285,99 +288,53 @@ def chunk_article_partitions(
         )
 
 
-chunks_df = extracted_articles_df.mapInPandas(
+chunks_df = materialized_extracted_articles_df.mapInPandas(
     chunk_article_partitions,
     schema=chunk_schema,
-).cache()
-total_chunks = chunks_df.count()
+)
+chunk_rows = chunks_df.collect()
+total_chunks = len(chunk_rows)
 
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bounded driver-side persistence
+# MAGIC ## Databricks Serverless PostgreSQL persistence
 # MAGIC
-# MAGIC Extraction and chunk generation occur through Spark. Because
-# MAGIC `max_articles` strictly bounds this educational workload, final chunks
-# MAGIC are collected to the driver, grouped by article, and atomically replaced
-# MAGIC through the JVM PostgreSQL JDBC driver. This avoids native Python
-# MAGIC PostgreSQL dependencies in the Databricks runtime while preventing stale
-# MAGIC extra chunks.
+# MAGIC The extracted rows and chunks are materialized once because `max_articles`
+# MAGIC strictly bounds this educational workload. This prevents repeated HTTP
+# MAGIC extraction across Spark actions. The final Spark DataFrame is appended
+# MAGIC through Databricks' bundled PostgreSQL data source. The earlier left anti
+# MAGIC join makes append safe by selecting only article IDs with no stored chunks.
 
 # COMMAND ----------
 
-chunks_by_article: dict[str, dict[int, str]] = defaultdict(dict)
-for row in chunks_df.collect():
-    chunks_by_article[str(row.article_id)][int(row.chunk_index)] = str(row.chunk_text)
-
-
-def replace_article_chunks_via_jdbc(
-    article_id: str,
-    indexed_chunks: dict[int, str],
-) -> None:
-    """Atomically replace one article's chunks with prepared JDBC statements."""
-
-    connection = None
-    delete_statement = None
-    insert_statement = None
-    try:
-        jvm = spark._sc._gateway.jvm
-        connection_properties = jvm.java.util.Properties()
-        connection_properties.setProperty("user", pg_user)
-        connection_properties.setProperty("password", database_token)
-        connection_properties.setProperty("sslmode", pg_sslmode)
-        connection = jvm.java.sql.DriverManager.getConnection(
-            jdbc_url,
-            connection_properties,
-        )
-        connection.setAutoCommit(False)
-
-        delete_statement = connection.prepareStatement(
-            "DELETE FROM news_article_chunks WHERE article_id = ?"
-        )
-        delete_statement.setString(1, article_id)
-        delete_statement.executeUpdate()
-
-        if indexed_chunks:
-            insert_statement = connection.prepareStatement(
-                """
-                INSERT INTO news_article_chunks
-                    (article_id, chunk_index, chunk_text)
-                VALUES (?, ?, ?)
-                """
-            )
-            for chunk_index in sorted(indexed_chunks):
-                insert_statement.setString(1, article_id)
-                insert_statement.setInt(2, chunk_index)
-                insert_statement.setString(3, indexed_chunks[chunk_index])
-                insert_statement.addBatch()
-            insert_statement.executeBatch()
-
-        connection.commit()
-    except Exception:
-        if connection is not None:
-            try:
-                connection.rollback()
-            except Exception:
-                pass
-        raise RuntimeError(
-            f"Failed to persist chunks for article {article_id}."
-        ) from None
-    finally:
-        for resource in (insert_statement, delete_statement, connection):
-            if resource is not None:
-                try:
-                    resource.close()
-                except Exception:
-                    pass
-
+article_ids_to_write = {str(row.article_id) for row in chunk_rows}
 articles_persisted = 0
-for article_id, indexed_chunks in chunks_by_article.items():
-    ordered_indexes = sorted(indexed_chunks)
-    if ordered_indexes != list(range(len(ordered_indexes))):
-        raise RuntimeError("Generated chunk indexes are not contiguous.")
-    replace_article_chunks_via_jdbc(article_id, indexed_chunks)
-    articles_persisted += 1
+if total_chunks > 0:
+    # PostgreSQL applies the schema's DEFAULT CURRENT_TIMESTAMP for created_at.
+    chunks_to_write_df = spark.createDataFrame(chunk_rows, schema=chunk_schema).select(
+        "article_id",
+        "chunk_index",
+        "chunk_text",
+    )
+    try:
+        (
+            chunks_to_write_df.write.format("postgresql")
+            .option("host", pg_host)
+            .option("port", str(pg_port))
+            .option("database", pg_database)
+            .option("dbtable", "public.news_article_chunks")
+            .option("user", pg_user)
+            .option("password", database_token)
+            .option("batchsize", "100")
+            .option("numPartitions", "1")
+            .mode("append")
+            .save()
+        )
+    except Exception:
+        raise RuntimeError("PostgreSQL chunk persistence failed.") from None
+    articles_persisted = len(article_ids_to_write)
 
 
 # COMMAND ----------
