@@ -170,7 +170,9 @@ news_article_chunks
 
 Publisher sites can legitimately block or restrict automated retrieval. When a body cannot be accessed or extracted, the already-ingested Massive title and description remain grounded unstructured source text, so the bounded Spark job uses them rather than fabricating content or failing the whole batch. Articles with no usable body or metadata are skipped.
 
-The Databricks notebook source is `pipelines/process_news_content.py`. Spark performs bounded distributed extraction and chunk generation, then the small final chunk set is collected to the driver and persisted per article through an atomic delete-and-replace repository operation. This keeps stale chunks from earlier versions from surviving without introducing a complex distributed database writer.
+The Databricks notebook source is `pipelines/process_news_content.py`. Spark performs bounded distributed extraction and chunk generation, then the small final chunk set is collected to the driver and persisted per article through prepared JDBC delete-and-insert transactions. This keeps stale chunks from earlier versions from surviving without introducing a complex distributed database writer.
+
+The local application continues to use psycopg through `app/db.py`. The Databricks Spark pipeline uses PostgreSQL JDBC directly for both Lakebase reads and bounded writes, avoiding a native psycopg/libpq dependency in the Databricks Python process.
 
 Embeddings, vector storage, semantic search, and RAG are intentionally deferred to Phase 4B. The Phase 4A notebook has not yet been live-validated in a Databricks Spark runtime.
 

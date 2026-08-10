@@ -5,13 +5,13 @@
 # MAGIC This bounded Spark pipeline reads already-ingested `news_articles` from
 # MAGIC Lakebase, skips article IDs that already have chunks, performs distributed
 # MAGIC webpage extraction with metadata fallback, creates deterministic chunks,
-# MAGIC and persists them through the application repository boundary.
+# MAGIC and persists them through bounded JDBC transactions.
 # MAGIC
 # MAGIC It does not call Massive and it does not generate embeddings.
 
 # COMMAND ----------
 
-# MAGIC %pip install "databricks-sdk>=0.89,<1.0" "psycopg[binary]>=3.2,<4.0" "trafilatura>=2.1,<3.0"
+# MAGIC %pip install "databricks-sdk>=0.89,<1.0" "trafilatura>=2.1,<3.0"
 
 # COMMAND ----------
 
@@ -32,9 +32,6 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from app.config import DatabaseConfig
-from app.db import database_connection
-from app.repositories import StockRepository
 # COMMAND ----------
 
 # MAGIC %md
@@ -303,8 +300,9 @@ total_chunks = chunks_df.count()
 # MAGIC Extraction and chunk generation occur through Spark. Because
 # MAGIC `max_articles` strictly bounds this educational workload, final chunks
 # MAGIC are collected to the driver, grouped by article, and atomically replaced
-# MAGIC through `StockRepository`. This avoids a needless distributed Postgres
-# MAGIC upsert layer while preventing stale extra chunks.
+# MAGIC through the JVM PostgreSQL JDBC driver. This avoids native Python
+# MAGIC PostgreSQL dependencies in the Databricks runtime while preventing stale
+# MAGIC extra chunks.
 
 # COMMAND ----------
 
@@ -312,25 +310,73 @@ chunks_by_article: dict[str, dict[int, str]] = defaultdict(dict)
 for row in chunks_df.collect():
     chunks_by_article[str(row.article_id)][int(row.chunk_index)] = str(row.chunk_text)
 
-database_config = DatabaseConfig(
-    host=pg_host,
-    database=pg_database,
-    user=pg_user,
-    endpoint_name=endpoint_name,
-    port=pg_port,
-    sslmode=pg_sslmode,
-)
-repository = StockRepository(
-    connection_factory=lambda: database_connection(database_config)
-)
+
+def replace_article_chunks_via_jdbc(
+    article_id: str,
+    indexed_chunks: dict[int, str],
+) -> None:
+    """Atomically replace one article's chunks with prepared JDBC statements."""
+
+    connection = None
+    delete_statement = None
+    insert_statement = None
+    try:
+        jvm = spark._sc._gateway.jvm
+        connection_properties = jvm.java.util.Properties()
+        connection_properties.setProperty("user", pg_user)
+        connection_properties.setProperty("password", database_token)
+        connection_properties.setProperty("sslmode", pg_sslmode)
+        connection = jvm.java.sql.DriverManager.getConnection(
+            jdbc_url,
+            connection_properties,
+        )
+        connection.setAutoCommit(False)
+
+        delete_statement = connection.prepareStatement(
+            "DELETE FROM news_article_chunks WHERE article_id = ?"
+        )
+        delete_statement.setString(1, article_id)
+        delete_statement.executeUpdate()
+
+        if indexed_chunks:
+            insert_statement = connection.prepareStatement(
+                """
+                INSERT INTO news_article_chunks
+                    (article_id, chunk_index, chunk_text)
+                VALUES (?, ?, ?)
+                """
+            )
+            for chunk_index in sorted(indexed_chunks):
+                insert_statement.setString(1, article_id)
+                insert_statement.setInt(2, chunk_index)
+                insert_statement.setString(3, indexed_chunks[chunk_index])
+                insert_statement.addBatch()
+            insert_statement.executeBatch()
+
+        connection.commit()
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"Failed to persist chunks for article {article_id}."
+        ) from None
+    finally:
+        for resource in (insert_statement, delete_statement, connection):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception:
+                    pass
 
 articles_persisted = 0
 for article_id, indexed_chunks in chunks_by_article.items():
     ordered_indexes = sorted(indexed_chunks)
     if ordered_indexes != list(range(len(ordered_indexes))):
         raise RuntimeError("Generated chunk indexes are not contiguous.")
-    ordered_chunks = [indexed_chunks[index] for index in ordered_indexes]
-    repository.replace_news_article_chunks(article_id, ordered_chunks)
+    replace_article_chunks_via_jdbc(article_id, indexed_chunks)
     articles_persisted += 1
 
 
