@@ -252,7 +252,13 @@ class McpSourceAndDeploymentTests(unittest.TestCase):
                 "command": [
                     "python",
                     "mcp_server/stock_research_mcp.py",
-                ]
+                ],
+                "env": [
+                    {
+                        "name": "ENDPOINT_NAME",
+                        "valueFrom": "postgres",
+                    }
+                ],
             },
         )
 
