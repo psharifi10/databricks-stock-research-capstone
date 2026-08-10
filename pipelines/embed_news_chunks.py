@@ -173,6 +173,19 @@ embedded_schema = StructType(
 def embed_chunk_partitions(
     batches: Iterator[pd.DataFrame],
 ) -> Iterator[pd.DataFrame]:
+    import os
+
+    cache_root = "/tmp/huggingface"
+    os.environ.setdefault("HF_HOME", cache_root)
+    os.environ.setdefault("HF_HUB_CACHE", f"{cache_root}/hub")
+    os.environ.setdefault("TRANSFORMERS_CACHE", f"{cache_root}/transformers")
+    for cache_path in (
+        cache_root,
+        f"{cache_root}/hub",
+        f"{cache_root}/transformers",
+    ):
+        os.makedirs(cache_path, exist_ok=True)
+
     from sentence_transformers import SentenceTransformer
 
     from pipelines.embeddings import validate_embedding

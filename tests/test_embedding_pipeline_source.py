@@ -45,6 +45,25 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         self.assertEqual(EMBEDDING_MODEL_NAME, "sentence-transformers/all-MiniLM-L6-v2")
         self.assertEqual(EMBEDDING_DIMENSION, 384)
 
+    def test_worker_configures_writable_hugging_face_cache_before_import(self) -> None:
+        worker_start = self.source.index("def embed_chunk_partitions")
+        cache_start = self.source.index(
+            'cache_root = "/tmp/huggingface"',
+            worker_start,
+        )
+        sentence_transformer_import = self.source.index(
+            "from sentence_transformers import SentenceTransformer",
+            worker_start,
+        )
+
+        self.assertLess(cache_start, sentence_transformer_import)
+        self.assertIn('os.environ.setdefault("HF_HOME", cache_root)', self.source)
+        self.assertIn('os.environ.setdefault("HF_HUB_CACHE"', self.source)
+        self.assertIn('os.environ.setdefault("TRANSFORMERS_CACHE"', self.source)
+        self.assertIn("os.makedirs(cache_path, exist_ok=True)", self.source)
+        self.assertNotIn("/Workspace", self.source)
+        self.assertNotIn("/Repos", self.source)
+
     def test_data_api_rpc_updates_existing_rows_without_exposing_values(self) -> None:
         self.assertIn("workspace_client.config.authenticate()", self.source)
         self.assertIn("/public/rpc/set_news_article_chunk_embedding", self.source)
