@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import os
 from typing import Any
 
@@ -10,6 +10,16 @@ from app.validation import normalize_bounded_text
 
 
 ClientFactory = Callable[[], Any]
+READ_ONLY_MCP_TOOLS = frozenset(
+    {
+        "get_company",
+        "get_price_history",
+        "search_financial_news",
+        "build_research_context",
+        "health",
+    }
+)
+MAX_SUPERVISOR_TURNS = 5
 
 
 class AgentServiceError(RuntimeError):
@@ -39,35 +49,53 @@ class SupervisorAgentClient:
             maximum=10000,
         )
         endpoint_name = self._resolve_endpoint_name()
-        try:
-            response = self._get_client().responses.create(
-                model=endpoint_name,
-                input=[{"role": "user", "content": normalized_prompt}],
-                stream=False,
+        input_history: list[Any] = [
+            {"role": "user", "content": normalized_prompt}
+        ]
+        for _turn in range(MAX_SUPERVISOR_TURNS):
+            try:
+                response = self._get_client().responses.create(
+                    model=endpoint_name,
+                    input=input_history,
+                    stream=False,
+                )
+            except Exception as error:
+                raise AgentServiceError(
+                    "The Supervisor Agent request could not be completed."
+                ) from error
+
+            outputs = _field(response, "output") or []
+            approval_requests = [
+                output
+                for output in outputs
+                if _field(output, "type") == "mcp_approval_request"
+            ]
+            if not approval_requests:
+                return _extract_final_text(response)
+
+            for approval_request in approval_requests:
+                if _field(approval_request, "name") not in READ_ONLY_MCP_TOOLS:
+                    raise AgentServiceError(
+                        "This action requires explicit confirmation and cannot "
+                        "be performed from the research dashboard."
+                    )
+
+            input_history.extend(
+                _serialize_output_item(output) for output in outputs
             )
-        except Exception as error:
-            raise AgentServiceError(
-                "The Supervisor Agent request could not be completed."
-            ) from error
+            input_history.extend(
+                {
+                    "type": "mcp_approval_response",
+                    "id": _field(approval_request, "id"),
+                    "approval_request_id": _field(approval_request, "id"),
+                    "approve": True,
+                }
+                for approval_request in approval_requests
+            )
 
-        final_output_text = None
-        for output in getattr(response, "output", None) or []:
-            text_parts = []
-            for content in getattr(output, "content", None) or []:
-                text = getattr(content, "text", None)
-                if isinstance(text, str) and text.strip():
-                    text_parts.append(text.strip())
-            if text_parts:
-                final_output_text = " ".join(text_parts)
-
-        if final_output_text is not None:
-            return final_output_text
-
-        output_text = getattr(response, "output_text", None)
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
         raise AgentServiceError(
-            "The Supervisor Agent did not return a textual response."
+            "The Supervisor Agent could not complete the request within the "
+            "allowed number of turns."
         )
 
     def _resolve_endpoint_name(self) -> str:
@@ -85,6 +113,52 @@ class SupervisorAgentClient:
         if self._client is None:
             self._client = self._client_factory()
         return self._client
+
+
+def _extract_final_text(response: Any) -> str:
+    """Return the last structured assistant text after approvals are complete."""
+
+    final_output_text = None
+    for output in _field(response, "output") or []:
+        text_parts = []
+        for content in _field(output, "content") or []:
+            text = _field(content, "text")
+            if isinstance(text, str) and text.strip():
+                text_parts.append(text.strip())
+        if text_parts:
+            final_output_text = " ".join(text_parts)
+
+    if final_output_text is not None:
+        return final_output_text
+
+    output_text = _field(response, "output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    raise AgentServiceError(
+        "The Supervisor Agent did not return a textual response."
+    )
+
+
+def _field(value: Any, name: str) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _serialize_output_item(output: Any) -> dict[str, Any]:
+    if isinstance(output, Mapping):
+        return dict(output)
+    model_dump = getattr(output, "model_dump", None)
+    if not callable(model_dump):
+        raise AgentServiceError(
+            "The Supervisor Agent response could not be continued safely."
+        )
+    serialized = model_dump()
+    if not isinstance(serialized, Mapping):
+        raise AgentServiceError(
+            "The Supervisor Agent response could not be continued safely."
+        )
+    return dict(serialized)
 
 
 def _create_databricks_client() -> Any:
