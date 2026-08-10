@@ -267,6 +267,30 @@ Lakebase relational/vector data
 
 The Phase 5B tools are read-only. Write tools follow in a separate phase, and no LLM runs inside the MCP server.
 
+## Phase 6A safe Lakebase write actions
+
+Phase 6A adds four explicit-action mutations through the existing service and repository boundaries:
+
+```text
+Agent
+  |
+  v
+MCP write tool
+  |
+  v
+ResearchActionService
+  |
+  v
+StockRepository
+  |
+  v
+Lakebase
+```
+
+The write tools are `add_to_watchlist`, `remove_from_watchlist`, `save_research_note`, and `save_analysis_report`. Each accepts an explicit user email for Phase 6A, validates and normalizes its inputs, and returns bounded structured metadata through the standard MCP result envelope.
+
+Mutations require explicit user intent. The MCP server never adds a ticker or saves a note or report as a side effect of retrieval or generated research.
+
 ## Proposed architecture
 
 ```text

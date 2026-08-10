@@ -11,7 +11,9 @@ from app.massive_client import MassiveClient
 from app.repositories import StockRepository
 from app.validation import (
     MAX_SEMANTIC_SEARCH_RESULTS,
+    normalize_bounded_text,
     normalize_bounded_limit,
+    normalize_email,
     normalize_ticker,
     normalize_top_k,
 )
@@ -105,6 +107,106 @@ class SemanticNewsSearchService:
             ticker=symbol,
             top_k=limit,
         )
+
+
+class ResearchActionService:
+    """Validate explicit user actions and delegate Lakebase mutations."""
+
+    def __init__(self, repository: StockRepository) -> None:
+        self._repository = repository
+
+    def add_to_watchlist(
+        self,
+        user_email: str,
+        ticker: str,
+    ) -> dict[str, Any]:
+        email = normalize_email(user_email)
+        symbol = normalize_ticker(ticker)
+        user_id = self._resolve_user_id(email)
+        added = self._repository.add_watchlist_ticker(user_id, symbol)
+        return {
+            "user_email": email,
+            "ticker": symbol,
+            "added": added,
+            "already_present": not added,
+        }
+
+    def remove_from_watchlist(
+        self,
+        user_email: str,
+        ticker: str,
+    ) -> dict[str, Any]:
+        email = normalize_email(user_email)
+        symbol = normalize_ticker(ticker)
+        user_id = self._resolve_user_id(email)
+        removed = self._repository.remove_watchlist_ticker(user_id, symbol)
+        return {
+            "user_email": email,
+            "ticker": symbol,
+            "removed": removed,
+        }
+
+    def save_research_note(
+        self,
+        user_email: str,
+        ticker: str,
+        note_text: str,
+    ) -> dict[str, Any]:
+        email = normalize_email(user_email)
+        symbol = normalize_ticker(ticker)
+        note = normalize_bounded_text(
+            note_text,
+            field_name="Research note",
+            maximum=5000,
+        )
+        user_id = self._resolve_user_id(email)
+        saved = self._repository.save_research_note(user_id, symbol, note)
+        return {
+            "note_id": saved["id"],
+            "user_email": email,
+            "ticker": symbol,
+            "created_at": saved.get("created_at"),
+            "saved": True,
+        }
+
+    def save_analysis_report(
+        self,
+        user_email: str,
+        ticker: str,
+        title: str,
+        report_text: str,
+    ) -> dict[str, Any]:
+        email = normalize_email(user_email)
+        symbol = normalize_ticker(ticker)
+        normalized_title = normalize_bounded_text(
+            title,
+            field_name="Analysis report title",
+            maximum=200,
+        )
+        report = normalize_bounded_text(
+            report_text,
+            field_name="Analysis report body",
+            maximum=20000,
+        )
+        user_id = self._resolve_user_id(email)
+        saved = self._repository.save_analysis_report(
+            user_id,
+            symbol,
+            normalized_title,
+            report,
+        )
+        return {
+            "report_id": saved["id"],
+            "user_email": email,
+            "ticker": symbol,
+            "title": normalized_title,
+            "created_at": saved.get("created_at"),
+            "saved": True,
+        }
+
+    def _resolve_user_id(self, email: str) -> int:
+        user = self._repository.get_or_create_user(email)
+        return int(user["id"])
 
 
 class ResearchContextService:

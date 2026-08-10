@@ -73,3 +73,23 @@ def normalize_bounded_limit(
             f"{field_name} must be an integer between 1 and {maximum}."
         )
     return value
+
+
+def normalize_bounded_text(
+    value: str,
+    *,
+    field_name: str,
+    maximum: int,
+) -> str:
+    """Trim surrounding whitespace and validate nonblank bounded user text."""
+
+    if not isinstance(value, str):
+        raise ValidationError(f"{field_name} must be a string.")
+    normalized = value.strip()
+    if not normalized:
+        raise ValidationError(f"{field_name} cannot be blank.")
+    if len(normalized) > maximum:
+        raise ValidationError(
+            f"{field_name} must be at most {maximum} characters."
+        )
+    return normalized

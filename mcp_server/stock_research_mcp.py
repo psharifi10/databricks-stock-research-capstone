@@ -1,4 +1,4 @@
-"""Thin read-only FastMCP tools over persisted stock-research services."""
+"""Thin FastMCP tools over persisted stock-research services."""
 
 from __future__ import annotations
 
@@ -19,7 +19,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from fastmcp import FastMCP
 
 from app.repositories import StockRepository
-from app.services import ResearchContextService, SemanticNewsSearchService
+from app.services import (
+    ResearchActionService,
+    ResearchContextService,
+    SemanticNewsSearchService,
+)
 from app.validation import (
     ValidationError,
     normalize_bounded_limit,
@@ -37,11 +41,12 @@ mcp = FastMCP("Stock Research MCP")
 
 @dataclass(frozen=True)
 class ResearchServices:
-    """Reusable read-only service composition for all MCP tool calls."""
+    """Reusable service composition for all MCP tool calls."""
 
     repository: StockRepository
     semantic_search: SemanticNewsSearchService
     research_context: ResearchContextService
+    actions: ResearchActionService
 
 
 @lru_cache(maxsize=1)
@@ -57,6 +62,7 @@ def get_services() -> ResearchServices:
         repository=repository,
         semantic_search=semantic_search,
         research_context=ResearchContextService(repository, semantic_search),
+        actions=ResearchActionService(repository),
     )
 
 
@@ -197,6 +203,63 @@ def build_research_context(ticker: str, question: str) -> dict[str, Any]:
         lambda: get_services().research_context.build_research_context(
             ticker,
             question,
+        )
+    )
+
+
+@mcp.tool
+def add_to_watchlist(user_email: str, ticker: str) -> dict[str, Any]:
+    """Use when the user explicitly asks to add a ticker to their stock research watchlist."""
+
+    return _execute_tool(
+        lambda: get_services().actions.add_to_watchlist(user_email, ticker)
+    )
+
+
+@mcp.tool
+def remove_from_watchlist(user_email: str, ticker: str) -> dict[str, Any]:
+    """Use when the user explicitly asks to remove a ticker from their stock research watchlist."""
+
+    return _execute_tool(
+        lambda: get_services().actions.remove_from_watchlist(
+            user_email,
+            ticker,
+        )
+    )
+
+
+@mcp.tool
+def save_research_note(
+    user_email: str,
+    ticker: str,
+    note_text: str,
+) -> dict[str, Any]:
+    """Use when the user explicitly wants to save a personal research note about a ticker."""
+
+    return _execute_tool(
+        lambda: get_services().actions.save_research_note(
+            user_email,
+            ticker,
+            note_text,
+        )
+    )
+
+
+@mcp.tool
+def save_analysis_report(
+    user_email: str,
+    ticker: str,
+    title: str,
+    report_text: str,
+) -> dict[str, Any]:
+    """Use when the user explicitly wants to persist a completed analysis or report."""
+
+    return _execute_tool(
+        lambda: get_services().actions.save_analysis_report(
+            user_email,
+            ticker,
+            title,
+            report_text,
         )
     )
 

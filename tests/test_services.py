@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from app.services import (
+    ResearchActionService,
     ResearchContextService,
     SemanticNewsSearchService,
     StockResearchService,
@@ -114,6 +115,126 @@ class SemanticNewsSearchServiceTests(unittest.TestCase):
 
         self.embedding_service.embed_query.assert_not_called()
         self.repository.search_news_chunks.assert_not_called()
+
+
+class ResearchActionServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repository = MagicMock()
+        self.repository.get_or_create_user.return_value = {
+            "id": 7,
+            "email": "user@example.com",
+        }
+        self.service = ResearchActionService(self.repository)
+
+    def test_watchlist_add_resolves_user_and_reports_idempotency(self) -> None:
+        self.repository.add_watchlist_ticker.side_effect = [True, False]
+
+        added = self.service.add_to_watchlist(" User@Example.com ", " aapl ")
+        existing = self.service.add_to_watchlist("user@example.com", "AAPL")
+
+        self.assertEqual(
+            added,
+            {
+                "user_email": "user@example.com",
+                "ticker": "AAPL",
+                "added": True,
+                "already_present": False,
+            },
+        )
+        self.assertFalse(existing["added"])
+        self.assertTrue(existing["already_present"])
+        self.assertEqual(self.repository.get_or_create_user.call_count, 2)
+        self.repository.add_watchlist_ticker.assert_called_with(7, "AAPL")
+
+    def test_watchlist_remove_resolves_user_and_delegates(self) -> None:
+        self.repository.remove_watchlist_ticker.return_value = True
+
+        result = self.service.remove_from_watchlist(
+            " User@Example.com ",
+            " msft ",
+        )
+
+        self.repository.get_or_create_user.assert_called_once_with(
+            "user@example.com"
+        )
+        self.repository.remove_watchlist_ticker.assert_called_once_with(
+            7,
+            "MSFT",
+        )
+        self.assertTrue(result["removed"])
+
+    def test_note_validation_precedes_user_resolution_and_save_delegates(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.service.save_research_note(
+                "user@example.com",
+                "AAPL",
+                "   ",
+            )
+        with self.assertRaises(ValidationError):
+            self.service.save_research_note(
+                "user@example.com",
+                "AAPL",
+                "x" * 5001,
+            )
+        self.repository.get_or_create_user.assert_not_called()
+
+        self.repository.save_research_note.return_value = {
+            "id": 31,
+            "created_at": "created",
+        }
+        result = self.service.save_research_note(
+            " User@Example.com ",
+            " aapl ",
+            "  Evidence-based note.  ",
+        )
+
+        self.repository.save_research_note.assert_called_once_with(
+            7,
+            "AAPL",
+            "Evidence-based note.",
+        )
+        self.assertEqual(result["note_id"], 31)
+        self.assertTrue(result["saved"])
+        self.assertNotIn("note_text", result)
+
+    def test_report_validation_precedes_user_resolution_and_save_delegates(self) -> None:
+        invalid_values = (
+            ("", "Report body"),
+            ("x" * 201, "Report body"),
+            ("Title", "   "),
+            ("Title", "x" * 20001),
+        )
+        for title, body in invalid_values:
+            with self.subTest(title_length=len(title), body_length=len(body)):
+                with self.assertRaises(ValidationError):
+                    self.service.save_analysis_report(
+                        "user@example.com",
+                        "AAPL",
+                        title,
+                        body,
+                    )
+        self.repository.get_or_create_user.assert_not_called()
+
+        self.repository.save_analysis_report.return_value = {
+            "id": 41,
+            "created_at": "created",
+        }
+        result = self.service.save_analysis_report(
+            " User@Example.com ",
+            " aapl ",
+            "  Quarterly outlook  ",
+            "  Grounded report body.  ",
+        )
+
+        self.repository.save_analysis_report.assert_called_once_with(
+            7,
+            "AAPL",
+            "Quarterly outlook",
+            "Grounded report body.",
+        )
+        self.assertEqual(result["report_id"], 41)
+        self.assertEqual(result["title"], "Quarterly outlook")
+        self.assertNotIn("report_text", result)
 
 
 class ResearchContextServiceTests(unittest.TestCase):

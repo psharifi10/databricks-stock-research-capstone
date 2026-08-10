@@ -13,6 +13,7 @@ import psycopg
 from app.db import database_connection
 from app.validation import (
     ValidationError,
+    normalize_bounded_text,
     normalize_bounded_limit,
     normalize_email,
     normalize_ticker,
@@ -123,6 +124,68 @@ class StockRepository:
                     (user_id, DEFAULT_WATCHLIST_NAME, symbol),
                 )
                 return cursor.fetchone() is not None
+
+    def save_research_note(
+        self,
+        user_id: int,
+        ticker: str,
+        note_text: str,
+    ) -> dict[str, Any]:
+        symbol = normalize_ticker(ticker)
+        normalized_note = normalize_bounded_text(
+            note_text,
+            field_name="Research note",
+            maximum=5000,
+        )
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO research_notes (user_id, ticker, note_text)
+                    VALUES (%s, %s, %s)
+                    RETURNING id, user_id, ticker, created_at, updated_at
+                    """,
+                    (user_id, symbol, normalized_note),
+                )
+                return _required_row(cursor.fetchone(), "research note")
+
+    def save_analysis_report(
+        self,
+        user_id: int,
+        ticker: str,
+        title: str,
+        report_text: str,
+    ) -> dict[str, Any]:
+        symbol = normalize_ticker(ticker)
+        normalized_title = normalize_bounded_text(
+            title,
+            field_name="Analysis report title",
+            maximum=200,
+        )
+        normalized_report = normalize_bounded_text(
+            report_text,
+            field_name="Analysis report body",
+            maximum=20000,
+        )
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO analysis_reports (
+                        user_id, ticker, title, report_text
+                    )
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, user_id, ticker, title,
+                              created_at, updated_at
+                    """,
+                    (
+                        user_id,
+                        symbol,
+                        normalized_title,
+                        normalized_report,
+                    ),
+                )
+                return _required_row(cursor.fetchone(), "analysis report")
 
     def upsert_company(self, company: Mapping[str, Any]) -> None:
         ticker = normalize_ticker(str(company.get("ticker") or ""))

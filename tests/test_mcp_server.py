@@ -1,4 +1,4 @@
-"""Offline contracts for the read-only Phase 5B FastMCP server."""
+"""Offline contracts for the Phase 6A FastMCP server."""
 
 from datetime import date
 from decimal import Decimal
@@ -16,7 +16,7 @@ SERVER_PATH = PROJECT_ROOT / "mcp_server" / "stock_research_mcp.py"
 
 
 class McpRegistrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_exact_read_only_tools_have_meaningful_docstrings(self) -> None:
+    async def test_exact_read_and_write_tools_have_meaningful_docstrings(self) -> None:
         tools = await server.mcp.list_tools()
 
         self.assertEqual(
@@ -27,11 +27,22 @@ class McpRegistrationTests(unittest.IsolatedAsyncioTestCase):
                 "search_financial_news",
                 "build_research_context",
                 "health",
+                "add_to_watchlist",
+                "remove_from_watchlist",
+                "save_research_note",
+                "save_analysis_report",
             },
         )
         for tool in tools:
             with self.subTest(tool=tool.name):
                 self.assertGreaterEqual(len((tool.description or "").split()), 8)
+                if tool.name in {
+                    "add_to_watchlist",
+                    "remove_from_watchlist",
+                    "save_research_note",
+                    "save_analysis_report",
+                }:
+                    self.assertIn("explicitly", tool.description.lower())
 
 
 class McpToolTests(unittest.TestCase):
@@ -39,10 +50,12 @@ class McpToolTests(unittest.TestCase):
         self.repository = MagicMock()
         self.semantic_search = MagicMock()
         self.research_context = MagicMock()
+        self.actions = MagicMock()
         self.services = server.ResearchServices(
             repository=self.repository,
             semantic_search=self.semantic_search,
             research_context=self.research_context,
+            actions=self.actions,
         )
         self.services_patcher = patch.object(
             server,
@@ -209,6 +222,101 @@ class McpToolTests(unittest.TestCase):
         self.assertNotIn("password", str(failure).lower())
         self.assertNotIn("secret", str(failure).lower())
 
+    def test_watchlist_write_tools_delegate_without_retrieval(self) -> None:
+        self.actions.add_to_watchlist.return_value = {
+            "user_email": "user@example.com",
+            "ticker": "AAPL",
+            "added": False,
+            "already_present": True,
+        }
+        self.actions.remove_from_watchlist.return_value = {
+            "user_email": "user@example.com",
+            "ticker": "AAPL",
+            "removed": True,
+        }
+
+        added = server.add_to_watchlist("user@example.com", "AAPL")
+        removed = server.remove_from_watchlist("user@example.com", "AAPL")
+
+        self.actions.add_to_watchlist.assert_called_once_with(
+            "user@example.com",
+            "AAPL",
+        )
+        self.actions.remove_from_watchlist.assert_called_once_with(
+            "user@example.com",
+            "AAPL",
+        )
+        self.assertTrue(added["data"]["already_present"])
+        self.assertTrue(removed["data"]["removed"])
+        self.repository.get_company.assert_not_called()
+        self.semantic_search.semantic_news_search.assert_not_called()
+
+    def test_note_and_report_write_tools_delegate(self) -> None:
+        self.actions.save_research_note.return_value = {
+            "note_id": 31,
+            "ticker": "AAPL",
+            "saved": True,
+        }
+        self.actions.save_analysis_report.return_value = {
+            "report_id": 41,
+            "ticker": "AAPL",
+            "title": "Outlook",
+            "saved": True,
+        }
+
+        note = server.save_research_note(
+            "user@example.com",
+            "AAPL",
+            "Research note",
+        )
+        report = server.save_analysis_report(
+            "user@example.com",
+            "AAPL",
+            "Outlook",
+            "Completed report",
+        )
+
+        self.actions.save_research_note.assert_called_once_with(
+            "user@example.com",
+            "AAPL",
+            "Research note",
+        )
+        self.actions.save_analysis_report.assert_called_once_with(
+            "user@example.com",
+            "AAPL",
+            "Outlook",
+            "Completed report",
+        )
+        self.assertEqual(note["data"]["note_id"], 31)
+        self.assertEqual(report["data"]["report_id"], 41)
+
+    def test_write_tool_validation_and_unexpected_errors_are_safe(self) -> None:
+        self.actions.save_research_note.side_effect = server.ValidationError(
+            "Research note cannot be blank."
+        )
+
+        invalid = server.save_research_note(
+            "user@example.com",
+            "AAPL",
+            "",
+        )
+
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["type"], "validation_error")
+
+        self.actions.save_research_note.side_effect = RuntimeError(
+            "private internal database detail"
+        )
+        failure = server.save_research_note(
+            "user@example.com",
+            "AAPL",
+            "Note",
+        )
+
+        self.assertEqual(failure["error"]["type"], "service_error")
+        self.assertNotIn("private", str(failure).lower())
+        self.assertNotIn("database detail", str(failure).lower())
+
 
 class McpSourceAndDeploymentTests(unittest.TestCase):
     @classmethod
@@ -221,16 +329,15 @@ class McpSourceAndDeploymentTests(unittest.TestCase):
         self.assertEqual(server.get_services.cache_info().currsize, 0)
         self.assertNotIn("database_connection(", self.source)
 
-    def test_server_has_no_massive_llm_or_write_tool_behavior(self) -> None:
+    def test_server_has_no_massive_llm_or_trading_behavior(self) -> None:
         for forbidden in (
             "MassiveClient",
             "OpenAI",
             "Anthropic",
             "chat.completions",
-            "add_watchlist_ticker",
-            "remove_watchlist_ticker",
-            "save_research_note",
-            "save_analysis_report",
+            "buy_stock",
+            "sell_stock",
+            "execute_trade",
         ):
             self.assertNotIn(forbidden, self.source)
 

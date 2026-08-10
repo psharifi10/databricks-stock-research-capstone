@@ -5,7 +5,13 @@ import json
 import unittest
 from unittest.mock import MagicMock
 
-from app.repositories import DEFAULT_WATCHLIST_NAME, StockRepository
+import psycopg
+
+from app.repositories import (
+    DEFAULT_WATCHLIST_NAME,
+    RepositoryError,
+    StockRepository,
+)
 from app.validation import ValidationError
 from pipelines.embeddings import EMBEDDING_DIMENSION
 
@@ -78,6 +84,77 @@ class StockRepositoryTests(unittest.TestCase):
         sql, parameters = self.cursor.execute.call_args.args
         self.assertIn("DELETE FROM watchlist_tickers", _compact_sql(sql))
         self.assertEqual(parameters, (7, DEFAULT_WATCHLIST_NAME, "AAPL"))
+
+    def test_research_note_insert_is_parameterized_and_returns_metadata(self) -> None:
+        self.cursor.fetchone.return_value = {
+            "id": 31,
+            "user_id": 7,
+            "ticker": "AAPL",
+            "created_at": "created",
+            "updated_at": "updated",
+        }
+
+        saved = self.repository.save_research_note(
+            7,
+            " aapl ",
+            "  Long-term research observation.  ",
+        )
+
+        sql, parameters = self.cursor.execute.call_args.args
+        compact_sql = _compact_sql(sql)
+        self.assertIn("INSERT INTO research_notes", compact_sql)
+        self.assertIn(
+            "RETURNING id, user_id, ticker, created_at, updated_at",
+            compact_sql,
+        )
+        self.assertEqual(
+            parameters,
+            (7, "AAPL", "Long-term research observation."),
+        )
+        self.assertNotIn("Long-term research observation", sql)
+        self.assertEqual(saved["id"], 31)
+
+    def test_analysis_report_insert_is_parameterized_and_returns_metadata(self) -> None:
+        self.cursor.fetchone.return_value = {
+            "id": 41,
+            "user_id": 7,
+            "ticker": "MSFT",
+            "title": "Quarterly outlook",
+            "created_at": "created",
+            "updated_at": "updated",
+        }
+
+        saved = self.repository.save_analysis_report(
+            7,
+            " msft ",
+            "  Quarterly outlook  ",
+            "  Grounded report body.  ",
+        )
+
+        sql, parameters = self.cursor.execute.call_args.args
+        compact_sql = _compact_sql(sql)
+        self.assertIn("INSERT INTO analysis_reports", compact_sql)
+        self.assertIn(
+            "RETURNING id, user_id, ticker, title, created_at, updated_at",
+            compact_sql,
+        )
+        self.assertEqual(
+            parameters,
+            (7, "MSFT", "Quarterly outlook", "Grounded report body."),
+        )
+        self.assertNotIn("Grounded report body", sql)
+        self.assertEqual(saved["title"], "Quarterly outlook")
+
+    def test_write_database_failure_is_safely_wrapped(self) -> None:
+        self.cursor.execute.side_effect = psycopg.OperationalError(
+            "private internal database detail"
+        )
+
+        with self.assertRaisesRegex(
+            RepositoryError,
+            "^The database operation failed\\.$",
+        ):
+            self.repository.save_research_note(7, "AAPL", "Safe note")
 
     def test_company_upsert_is_parameterized_and_preserves_raw_payload(self) -> None:
         company = {

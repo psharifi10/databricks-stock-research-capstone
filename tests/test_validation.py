@@ -2,7 +2,12 @@
 
 import unittest
 
-from app.validation import ValidationError, normalize_email, normalize_ticker
+from app.validation import (
+    ValidationError,
+    normalize_bounded_text,
+    normalize_email,
+    normalize_ticker,
+)
 
 
 class TickerValidationTests(unittest.TestCase):
@@ -27,6 +32,28 @@ class EmailValidationTests(unittest.TestCase):
     def test_bad_email_is_rejected(self) -> None:
         with self.assertRaises(ValidationError):
             normalize_email("not an email")
+
+
+class BoundedTextValidationTests(unittest.TestCase):
+    def test_surrounding_whitespace_is_trimmed_without_rewriting_content(self) -> None:
+        self.assertEqual(
+            normalize_bounded_text(
+                "  First line\n  second line  ",
+                field_name="Note",
+                maximum=100,
+            ),
+            "First line\n  second line",
+        )
+
+    def test_non_string_blank_and_oversized_text_are_rejected(self) -> None:
+        for value in (None, "   ", "abcd"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValidationError):
+                    normalize_bounded_text(
+                        value,  # type: ignore[arg-type]
+                        field_name="Note",
+                        maximum=3,
+                    )
 
 
 if __name__ == "__main__":
