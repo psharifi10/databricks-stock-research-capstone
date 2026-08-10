@@ -243,6 +243,30 @@ bounded research context
 
 `ResearchContextService` combines persisted company metadata, a bounded recent price window, ticker-specific recent news, and citation-ready semantic chunks. It preserves retrieval order, source URLs, article and chunk identifiers, publication metadata, sentiment, and similarity while excluding vectors from the returned context. `scripts/build_research_context.py` provides a concise local preview of counts and evidence titles. LLM generation, agent behavior, MCP tools, and citation prose remain deferred to later phases.
 
+## Phase 5B read-only MCP server
+
+Phase 5B exposes the existing grounded reads through one thin custom MCP boundary:
+
+```text
+Databricks Agent (later)
+        |
+        v
+Custom MCP server
+        |
+        v
+thin MCP tools
+        |
+        v
+service layer
+        |
+        v
+Lakebase relational/vector data
+```
+
+`mcp_server/stock_research_mcp.py` runs FastMCP over Streamable HTTP at `/mcp` and provides five tools: `get_company`, `get_price_history`, `search_financial_news`, `build_research_context`, and `health`. All tool results use consistent structured success/error envelopes, and service failures are sanitized before crossing the MCP boundary.
+
+The Phase 5B tools are read-only. Write tools follow in a separate phase, and no LLM runs inside the MCP server.
+
 ## Proposed architecture
 
 ```text

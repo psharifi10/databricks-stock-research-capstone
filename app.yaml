@@ -1,0 +1,3 @@
+command:
+  - python
+  - mcp_server/stock_research_mcp.py
