@@ -50,12 +50,25 @@ class SupervisorAgentClient:
                 "The Supervisor Agent request could not be completed."
             ) from error
 
+        final_output_text = None
+        for output in getattr(response, "output", None) or []:
+            text_parts = []
+            for content in getattr(output, "content", None) or []:
+                text = getattr(content, "text", None)
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+            if text_parts:
+                final_output_text = " ".join(text_parts)
+
+        if final_output_text is not None:
+            return final_output_text
+
         output_text = getattr(response, "output_text", None)
-        if not isinstance(output_text, str) or not output_text.strip():
-            raise AgentServiceError(
-                "The Supervisor Agent did not return a textual response."
-            )
-        return output_text.strip()
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+        raise AgentServiceError(
+            "The Supervisor Agent did not return a textual response."
+        )
 
     def _resolve_endpoint_name(self) -> str:
         endpoint_name = self._configured_endpoint

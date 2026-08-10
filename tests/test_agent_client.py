@@ -21,7 +21,16 @@ class SupervisorAgentClientTests(unittest.TestCase):
 
     def test_endpoint_is_read_from_environment_and_client_is_lazy(self) -> None:
         self.responses.create.return_value = SimpleNamespace(
-            output_text="  Grounded synthesized answer.  "
+            output=[
+                SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            text="  Grounded synthesized answer.  "
+                        )
+                    ]
+                )
+            ],
+            output_text="Intermediate convenience text.",
         )
         agent = SupervisorAgentClient(client_factory=self.client_factory)
 
@@ -40,6 +49,53 @@ class SupervisorAgentClientTests(unittest.TestCase):
             stream=False,
         )
         self.assertEqual(answer, "Grounded synthesized answer.")
+
+    def test_final_output_item_wins_over_intermediate_tool_intent(self) -> None:
+        self.responses.create.return_value = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            text="I'll search for recent financial news."
+                        )
+                    ]
+                ),
+                SimpleNamespace(content=[]),
+                SimpleNamespace(
+                    content=[
+                        SimpleNamespace(text="  Final grounded answer. "),
+                        SimpleNamespace(text=" Supporting synthesis.  "),
+                    ]
+                ),
+            ],
+            output_text="I'll search for recent financial news.",
+        )
+        agent = SupervisorAgentClient(
+            endpoint_name="injected-test-endpoint",
+            client=self.client,
+        )
+
+        answer = agent.generate_response("Research AAPL.")
+
+        self.assertEqual(
+            answer,
+            "Final grounded answer. Supporting synthesis.",
+        )
+        self.assertNotIn("I'll search", answer)
+
+    def test_empty_response_output_uses_output_text_fallback(self) -> None:
+        self.responses.create.return_value = SimpleNamespace(
+            output=[],
+            output_text="  Safe fallback answer.  ",
+        )
+        agent = SupervisorAgentClient(
+            endpoint_name="injected-test-endpoint",
+            client=self.client,
+        )
+
+        answer = agent.generate_response("Research AAPL.")
+
+        self.assertEqual(answer, "Safe fallback answer.")
 
     def test_missing_endpoint_fails_before_client_initialization(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -69,7 +125,17 @@ class SupervisorAgentClientTests(unittest.TestCase):
         self.assertNotIn("endpoint configuration detail", str(raised.exception))
 
         self.responses.create.side_effect = None
-        self.responses.create.return_value = SimpleNamespace(output_text="   ")
+        self.responses.create.return_value = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    content=[
+                        SimpleNamespace(text="   "),
+                        SimpleNamespace(value="not textual content"),
+                    ]
+                )
+            ],
+            output_text="   ",
+        )
         with self.assertRaisesRegex(
             AgentServiceError,
             "did not return a textual response",
