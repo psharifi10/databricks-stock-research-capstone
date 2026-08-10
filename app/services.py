@@ -7,7 +7,12 @@ from typing import Any
 
 from app.massive_client import MassiveClient
 from app.repositories import StockRepository
-from app.validation import normalize_ticker
+from app.validation import normalize_ticker, normalize_top_k
+from pipelines.embeddings import (
+    QueryEmbeddingService,
+    normalize_query_text,
+    validate_embedding,
+)
 
 
 class StockResearchService:
@@ -62,3 +67,34 @@ class StockResearchService:
         )
         self._repository.upsert_news_articles(articles)
         return articles
+
+
+class SemanticNewsSearchService:
+    """Embed a query and delegate bounded cosine retrieval to the repository."""
+
+    def __init__(
+        self,
+        repository: StockRepository,
+        embedding_service: QueryEmbeddingService,
+    ) -> None:
+        self._repository = repository
+        self._embedding_service = embedding_service
+
+    def semantic_news_search(
+        self,
+        query: str,
+        *,
+        ticker: str | None = None,
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        normalized_query = normalize_query_text(query)
+        symbol = normalize_ticker(ticker) if ticker is not None else None
+        limit = normalize_top_k(top_k)
+        query_embedding = validate_embedding(
+            self._embedding_service.embed_query(normalized_query)
+        )
+        return self._repository.search_news_chunks(
+            query_embedding,
+            ticker=symbol,
+            top_k=limit,
+        )

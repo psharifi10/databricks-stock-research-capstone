@@ -2,7 +2,7 @@
 
 An educational, production-minded capstone that helps a user research public companies using grounded market data and financial news. The project will combine a Databricks-hosted frontend, Lakebase application storage, Spark ingestion and enrichment, semantic retrieval, MCP tools, and a Databricks Agent Bricks supervisor.
 
-Phases 1 and 2 establish the relational schema, configuration/database boundary, and Massive-backed service layer. Phases 3B and 3C add Lakebase Autoscaling OAuth connectivity and validate the live stock-data ingestion path. Application routes, pipelines, embeddings, retrieval, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
+Phases 1 and 2 establish the relational schema, configuration/database boundary, and Massive-backed service layer. Phases 3B and 3C add Lakebase Autoscaling OAuth connectivity and validate the live stock-data ingestion path. Phase 4 adds Serverless article processing plus an offline implementation of vector embedding and semantic retrieval. Application routes, LLM synthesis, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
 
 ## Capstone requirements
 
@@ -27,7 +27,7 @@ The idempotent schema in `sql/001_core_schema.sql` defines the ten MVP tables:
 - `news_articles`, `news_article_tickers`, and `news_article_chunks` for citation-ready news content
 - `research_notes` and `analysis_reports` for durable agent and user writes
 
-The schema uses PostgreSQL-native types, `TIMESTAMPTZ` operational timestamps, JSONB source payloads, lifecycle-aware foreign keys, and focused lookup indexes. It deliberately does not enable pgvector or add embedding columns; vector capability and model dimensions will be confirmed in the later RAG phase.
+The core schema uses PostgreSQL-native types, `TIMESTAMPTZ` operational timestamps, JSONB source payloads, lifecycle-aware foreign keys, and focused lookup indexes. Phase 4B adds its vector columns and index through the separate idempotent `sql/002_chunk_embeddings.sql` migration without changing the ten logical entities.
 
 `app/config.py` reads either standard PostgreSQL environment fields (`PGHOST`, `PGDATABASE`, `PGUSER`, `PGPORT`, and `PGSSLMODE`) plus `ENDPOINT_NAME` for Databricks OAuth, or an optional `LAKEBASE_URL` for isolated local/legacy compatibility. OAuth mode does not use `PGPASSWORD`. Only non-sensitive settings have defaults. Configuration is validated only when a database connection is requested, so offline tooling and tests can import the application without credentials.
 
@@ -179,7 +179,44 @@ The local application continues to use psycopg and repository-level replacement 
 
 The Phase 4A Spark PostgreSQL read/write path was successfully live-validated on Databricks Serverless. The first run extracted all five eligible article bodies and persisted 20 chunks. A second run produced zero eligible articles, confirming that the left anti join prevents already-processed articles from being written again.
 
-Embeddings, vector storage, semantic search, and RAG are intentionally deferred to Phase 4B.
+## Phase 4B embeddings and semantic retrieval
+
+Phase 4B keeps each chunk and its embedding in the same Lakebase row:
+
+```text
+news_article_chunks where embedding is null
+                    |
+                    v
+bounded Spark PostgreSQL/JDBC read
+                    |
+                    v
+distributed mapInPandas embedding
+sentence-transformers/all-MiniLM-L6-v2
+                    |
+                    v
+normalized 384-dimensional vectors
+                    |
+                    v
+OAuth Lakebase Data API RPC update
+                    |
+                    v
+VECTOR(384) + lakebase_ann cosine index
+                    |
+                    v
+parameterized semantic retrieval with <=>
+```
+
+`sql/002_chunk_embeddings.sql` enables `lakebase_vector`, adds nullable `embedding VECTOR(384)` and `embedding_model` columns to `news_article_chunks`, and creates the `news_article_chunks_embedding_ann` index with `vector_cosine_ops`. The `lakebase_vector` extension is currently Beta. The query path uses cosine distance (`<=>`) and returns both distance and `1 - distance` similarity.
+
+The Databricks notebook source is `pipelines/embed_news_chunks.py`. It loads one `sentence-transformers/all-MiniLM-L6-v2` model per Spark partition, embeds bounded pandas batches, validates every vector dimension, and never prints vectors. Existing chunk rows are updated through a parameterized Lakebase Data API RPC; no duplicate chunks or table overwrite is used. The Data API must be enabled, its schema cache refreshed after applying the migration, and the notebook identity must have the documented table/function permissions. The non-secret Data API base URL is supplied through a widget.
+
+Application-side semantic retrieval remains independent of Spark. `QueryEmbeddingService` lazily loads the same model, `SemanticNewsSearchService` delegates the validated vector to `StockRepository.search_news_chunks`, and `scripts/search_news.py` prints bounded ranked chunk previews. For example:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\search_news.py "Apple CEO succession" --ticker AAPL --top-k 5
+```
+
+The Phase 4B implementation is offline-tested only. The migration, embedding notebook, and live semantic query have not yet been executed against Databricks or Lakebase. LLM answer generation and RAG synthesis remain out of scope.
 
 ## Proposed architecture
 
@@ -253,16 +290,17 @@ The frontend and MCP server are separate deployment units. Shared business rules
 - Confirm normalized multi-ticker news relationships and ticker-specific sentiment.
 - Confirm idempotent repeated refreshes without duplicate company, price, article, or association rows.
 
-### Phase 4A — Spark article extraction and chunking (offline implementation)
+### Phase 4A — Spark article extraction and chunking (complete)
 
 - Read bounded, unprocessed news from Lakebase through Spark JDBC and an anti join.
 - Extract article bodies through partition-scoped HTTP sessions and trafilatura, with metadata fallback.
 - Generate deterministic overlapping chunks and append only chunks whose article IDs passed the unprocessed-article anti join.
 
-### Phase 4B — Embeddings and semantic retrieval (planned)
+### Phase 4B — Embeddings and semantic retrieval (offline implementation)
 
-- Select and validate the embedding model and storage extension.
-- Add vector persistence and bounded citation-ready semantic retrieval.
+- Embed bounded unprocessed chunks with `all-MiniLM-L6-v2` through Spark.
+- Persist 384-dimensional vectors through a Serverless-safe Lakebase Data API update.
+- Retrieve bounded citation-ready chunks through the Lakebase cosine ANN index.
 
 ### Phase 5 — MCP server and agent integration
 

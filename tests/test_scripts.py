@@ -61,6 +61,8 @@ class LakebaseScriptTests(unittest.TestCase):
         apply_schema(_Connection(cursor), schema)
 
         self.assertIn("CREATE TABLE IF NOT EXISTS users", schema)
+        self.assertIn("CREATE EXTENSION IF NOT EXISTS lakebase_vector", schema)
+        self.assertIn("ADD COLUMN IF NOT EXISTS embedding VECTOR(384)", schema)
         self.assertEqual(cursor.executions, [(schema, None)])
 
     def test_schema_differences_require_the_exact_table_set(self) -> None:

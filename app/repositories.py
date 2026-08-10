@@ -11,7 +11,13 @@ from typing import Any, ContextManager
 import psycopg
 
 from app.db import database_connection
-from app.validation import ValidationError, normalize_email, normalize_ticker
+from app.validation import (
+    ValidationError,
+    normalize_email,
+    normalize_ticker,
+    normalize_top_k,
+)
+from pipelines.embeddings import serialize_embedding
 
 
 DEFAULT_WATCHLIST_NAME = "My Watchlist"
@@ -325,6 +331,98 @@ class StockRepository:
                     """,
                     (symbol, limit),
                 )
+                return [dict(row) for row in cursor.fetchall()]
+
+    def search_news_chunks(
+        self,
+        query_embedding: Sequence[float],
+        *,
+        ticker: str | None = None,
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return nearest embedded news chunks using cosine distance."""
+
+        serialized_embedding = serialize_embedding(query_embedding)
+        limit = normalize_top_k(top_k)
+        symbol = normalize_ticker(ticker) if ticker is not None else None
+
+        if symbol is None:
+            statement = """
+                WITH query_vector AS (
+                    SELECT %s::VECTOR(384) AS embedding
+                )
+                SELECT
+                    chunk.article_id,
+                    chunk.chunk_index,
+                    chunk.chunk_text,
+                    chunk.embedding_model,
+                    article.title,
+                    article.article_url,
+                    article.publisher AS publisher_name,
+                    article.published_at,
+                    NULL::TEXT AS ticker,
+                    NULL::TEXT AS sentiment,
+                    NULL::TEXT AS sentiment_reasoning,
+                    ARRAY(
+                        SELECT related.ticker
+                        FROM news_article_tickers AS related
+                        WHERE related.article_id = article.id
+                        ORDER BY related.ticker
+                    ) AS tickers,
+                    chunk.embedding <=> query_vector.embedding AS distance,
+                    1 - (chunk.embedding <=> query_vector.embedding) AS similarity
+                FROM news_article_chunks AS chunk
+                JOIN news_articles AS article ON article.id = chunk.article_id
+                CROSS JOIN query_vector
+                WHERE chunk.embedding IS NOT NULL
+                ORDER BY chunk.embedding <=> query_vector.embedding ASC,
+                         chunk.article_id ASC,
+                         chunk.chunk_index ASC
+                LIMIT %s
+            """
+            parameters = (serialized_embedding, limit)
+        else:
+            statement = """
+                WITH query_vector AS (
+                    SELECT %s::VECTOR(384) AS embedding
+                )
+                SELECT
+                    chunk.article_id,
+                    chunk.chunk_index,
+                    chunk.chunk_text,
+                    chunk.embedding_model,
+                    article.title,
+                    article.article_url,
+                    article.publisher AS publisher_name,
+                    article.published_at,
+                    requested.ticker,
+                    requested.sentiment,
+                    requested.sentiment_reasoning,
+                    ARRAY(
+                        SELECT related.ticker
+                        FROM news_article_tickers AS related
+                        WHERE related.article_id = article.id
+                        ORDER BY related.ticker
+                    ) AS tickers,
+                    chunk.embedding <=> query_vector.embedding AS distance,
+                    1 - (chunk.embedding <=> query_vector.embedding) AS similarity
+                FROM news_article_chunks AS chunk
+                JOIN news_articles AS article ON article.id = chunk.article_id
+                JOIN news_article_tickers AS requested
+                  ON requested.article_id = article.id
+                CROSS JOIN query_vector
+                WHERE chunk.embedding IS NOT NULL
+                  AND requested.ticker = %s
+                ORDER BY chunk.embedding <=> query_vector.embedding ASC,
+                         chunk.article_id ASC,
+                         chunk.chunk_index ASC
+                LIMIT %s
+            """
+            parameters = (serialized_embedding, symbol, limit)
+
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(statement, parameters)
                 return [dict(row) for row in cursor.fetchall()]
 
     def replace_news_article_chunks(

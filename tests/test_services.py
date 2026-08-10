@@ -4,7 +4,8 @@ from datetime import date
 import unittest
 from unittest.mock import MagicMock
 
-from app.services import StockResearchService
+from app.services import SemanticNewsSearchService, StockResearchService
+from pipelines.embeddings import EMBEDDING_DIMENSION, EmbeddingError
 
 
 class StockResearchServiceTests(unittest.TestCase):
@@ -67,6 +68,44 @@ class StockResearchServiceTests(unittest.TestCase):
         )
         self.repository.upsert_news_articles.assert_called_once_with(articles)
         self.assertIs(result, articles)
+
+
+class SemanticNewsSearchServiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.repository = MagicMock()
+        self.embedding_service = MagicMock()
+        self.embedding_service.embed_query.return_value = (
+            [0.25] * EMBEDDING_DIMENSION
+        )
+        self.repository.search_news_chunks.return_value = [
+            {"article_id": "article-1", "similarity": 0.9}
+        ]
+        self.service = SemanticNewsSearchService(
+            self.repository,
+            self.embedding_service,
+        )
+
+    def test_query_embedding_is_passed_to_bounded_ticker_search(self) -> None:
+        results = self.service.semantic_news_search(
+            "  Apple CEO succession  ",
+            ticker=" aapl ",
+            top_k=100,
+        )
+
+        self.embedding_service.embed_query.assert_called_once_with(
+            "Apple CEO succession"
+        )
+        args, kwargs = self.repository.search_news_chunks.call_args
+        self.assertEqual(len(args[0]), EMBEDDING_DIMENSION)
+        self.assertEqual(kwargs, {"ticker": "AAPL", "top_k": 20})
+        self.assertEqual(results[0]["similarity"], 0.9)
+
+    def test_blank_query_is_rejected_before_embedding(self) -> None:
+        with self.assertRaises(EmbeddingError):
+            self.service.semantic_news_search("   ")
+
+        self.embedding_service.embed_query.assert_not_called()
+        self.repository.search_news_chunks.assert_not_called()
 
 
 if __name__ == "__main__":

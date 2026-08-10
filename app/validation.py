@@ -6,6 +6,7 @@ import re
 
 
 _TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{0,4}(?:[.-][A-Z0-9]{1,2})?$")
+MAX_SEMANTIC_SEARCH_RESULTS = 20
 
 
 class ValidationError(ValueError):
@@ -45,3 +46,11 @@ def normalize_email(value: str) -> str:
     ):
         raise ValidationError("A valid email address is required.")
     return email
+
+
+def normalize_top_k(value: int) -> int:
+    """Validate a positive result count and clamp it to the safe search bound."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValidationError("top_k must be a positive integer.")
+    return min(value, MAX_SEMANTIC_SEARCH_RESULTS)

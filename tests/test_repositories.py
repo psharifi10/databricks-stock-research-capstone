@@ -6,6 +6,8 @@ import unittest
 from unittest.mock import MagicMock
 
 from app.repositories import DEFAULT_WATCHLIST_NAME, StockRepository
+from app.validation import ValidationError
+from pipelines.embeddings import EMBEDDING_DIMENSION
 
 
 def _compact_sql(value: str) -> str:
@@ -274,6 +276,54 @@ class StockRepositoryTests(unittest.TestCase):
         self.assertEqual(delete_parameters, ("article-1",))
         self.cursor.executemany.assert_not_called()
         self.assertEqual(count, 0)
+
+    def test_semantic_search_uses_parameterized_cosine_query(self) -> None:
+        self.cursor.fetchall.return_value = [
+            {
+                "article_id": "article-1",
+                "chunk_index": 0,
+                "similarity": 0.88,
+            }
+        ]
+        query_vector = [0.125] * EMBEDDING_DIMENSION
+
+        rows = self.repository.search_news_chunks(query_vector, top_k=100)
+
+        sql, parameters = self.cursor.execute.call_args.args
+        compact_sql = _compact_sql(sql)
+        self.assertIn("embedding <=> query_vector.embedding", compact_sql)
+        self.assertIn("1 - (chunk.embedding <=> query_vector.embedding)", compact_sql)
+        self.assertIn("chunk.embedding IS NOT NULL", compact_sql)
+        self.assertIn("JOIN news_articles", compact_sql)
+        self.assertNotIn(parameters[0], sql)
+        self.assertEqual(parameters[1], 20)
+        self.assertEqual(rows[0]["similarity"], 0.88)
+
+    def test_ticker_semantic_search_joins_normalized_association(self) -> None:
+        self.cursor.fetchall.return_value = []
+
+        self.repository.search_news_chunks(
+            [0.0] * EMBEDDING_DIMENSION,
+            ticker=" aapl ",
+            top_k=3,
+        )
+
+        sql, parameters = self.cursor.execute.call_args.args
+        compact_sql = _compact_sql(sql)
+        self.assertIn("JOIN news_article_tickers AS requested", compact_sql)
+        self.assertIn("requested.sentiment", compact_sql)
+        self.assertIn("requested.ticker = %s", compact_sql)
+        self.assertEqual(parameters[1:], ("AAPL", 3))
+        self.assertNotIn("AAPL", sql)
+
+    def test_semantic_search_rejects_invalid_top_k(self) -> None:
+        with self.assertRaises(ValidationError):
+            self.repository.search_news_chunks(
+                [0.0] * EMBEDDING_DIMENSION,
+                top_k=0,
+            )
+
+        self.connection_factory.assert_not_called()
 
 
 if __name__ == "__main__":
