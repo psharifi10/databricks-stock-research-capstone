@@ -7,6 +7,7 @@ const researchButton = document.querySelector("#research-button");
 const statusMessage = document.querySelector("#status");
 const errorMessage = document.querySelector("#error");
 const results = document.querySelector("#results");
+const agentAnswer = document.querySelector("#agent-answer");
 const companyContent = document.querySelector("#company-content");
 const latestPrice = document.querySelector("#latest-price");
 const priceRows = document.querySelector("#price-rows");
@@ -233,11 +234,31 @@ function renderResearch(context) {
   results.hidden = false;
 }
 
+function renderAgentSummary(answer, unavailable = false) {
+  agentAnswer.textContent = answer;
+  agentAnswer.classList.toggle("agent-answer--unavailable", unavailable);
+}
+
+async function requestResearch(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) {
+    throw new Error(
+      payload?.error?.message || "Research could not be completed right now.",
+    );
+  }
+  return payload.data;
+}
+
 function setLoading(isLoading) {
   researchButton.disabled = isLoading;
   researchButton.setAttribute("aria-busy", String(isLoading));
   statusMessage.textContent = isLoading
-    ? "Retrieving grounded company, price, and news evidence…"
+    ? "Requesting an AI summary and grounded research evidence…"
     : "";
 }
 
@@ -250,6 +271,7 @@ function showError(message) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   errorMessage.hidden = true;
+  results.hidden = true;
 
   const ticker = tickerInput.value.trim().toUpperCase();
   const question = questionInput.value.trim();
@@ -261,18 +283,25 @@ form.addEventListener("submit", async (event) => {
 
   setLoading(true);
   try {
-    const response = await fetch("/api/research", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticker, question }),
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) {
-      throw new Error(
-        payload?.error?.message || "Research could not be completed right now.",
+    const requestBody = { ticker, question };
+    const [agentOutcome, researchOutcome] = await Promise.allSettled([
+      requestResearch("/api/agent", requestBody),
+      requestResearch("/api/research", requestBody),
+    ]);
+
+    if (agentOutcome.status === "fulfilled") {
+      renderAgentSummary(agentOutcome.value.answer);
+    } else {
+      renderAgentSummary(
+        "AI summary is temporarily unavailable. Grounded research data is shown below.",
+        true,
       );
     }
-    renderResearch(payload.data);
+
+    if (researchOutcome.status === "rejected") {
+      throw researchOutcome.reason;
+    }
+    renderResearch(researchOutcome.value);
   } catch (error) {
     showError(
       error instanceof Error

@@ -26,6 +26,7 @@ STATIC_DIR = PROJECT_ROOT / "mcp_server" / "static"
 class FrontendRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.research_context = MagicMock()
+        self.agent_client = MagicMock()
         self.services = MagicMock()
         self.services.research_context = self.research_context
         self.services_patcher = patch.object(
@@ -34,6 +35,12 @@ class FrontendRouteTests(unittest.TestCase):
             return_value=self.services,
         )
         self.get_services = self.services_patcher.start()
+        self.agent_patcher = patch.object(
+            server,
+            "get_agent_client",
+            return_value=self.agent_client,
+        )
+        self.get_agent_client = self.agent_patcher.start()
         app = server.mcp.http_app(
             path="/mcp",
             stateless_http=True,
@@ -42,6 +49,7 @@ class FrontendRouteTests(unittest.TestCase):
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
+        self.agent_patcher.stop()
         self.services_patcher.stop()
 
     def test_homepage_and_static_assets_are_served_without_services(self) -> None:
@@ -52,6 +60,7 @@ class FrontendRouteTests(unittest.TestCase):
         self.assertIn('id="research-form"', response.text)
         self.assertIn('value="AAPL"', response.text)
         self.assertIn("What developments could affect", response.text)
+        self.assertIn("AI Research Summary", response.text)
         self.assertEqual(self.client.get("/static/styles.css").status_code, 200)
         self.assertEqual(self.client.get("/static/app.js").status_code, 200)
         self.get_services.assert_not_called()
@@ -64,7 +73,85 @@ class FrontendRouteTests(unittest.TestCase):
 
         self.assertIn("GET", routes["/"])
         self.assertEqual(routes["/api/research"], {"POST"})
+        self.assertEqual(routes["/api/agent"], {"POST"})
         self.assertIn("POST", routes["/mcp"])
+
+    def test_agent_api_validates_and_delegates_without_stock_facts(self) -> None:
+        self.agent_client.generate_response.return_value = (
+            "Supervisor-generated grounded answer."
+        )
+
+        response = self.client.post(
+            "/api/agent",
+            json={
+                "ticker": " aapl ",
+                "question": "  What changed in the outlook?  ",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        prompt = self.agent_client.generate_response.call_args.args[0]
+        self.assertIn("Research ticker AAPL.", prompt)
+        self.assertIn("User question:\nWhat changed in the outlook?", prompt)
+        self.assertIn("Use the available stock research MCP tools", prompt)
+        self.assertNotIn("price", prompt.lower())
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": True,
+                "data": {
+                    "ticker": "AAPL",
+                    "answer": "Supervisor-generated grounded answer.",
+                },
+            },
+        )
+
+    def test_agent_api_validation_errors_return_400(self) -> None:
+        for body in (
+            {"ticker": "../AAPL", "question": "What changed?"},
+            {"ticker": "AAPL", "question": "   "},
+            ["AAPL"],
+        ):
+            with self.subTest(body=body):
+                response = self.client.post("/api/agent", json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json()["error"]["type"],
+                    "validation_error",
+                )
+        self.agent_client.generate_response.assert_not_called()
+
+    def test_agent_service_failure_returns_safe_503(self) -> None:
+        self.agent_client.generate_response.side_effect = (
+            server.AgentServiceError("private endpoint detail")
+        )
+
+        response = self.client.post(
+            "/api/agent",
+            json={"ticker": "AAPL", "question": "What changed?"},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.json()
+        self.assertEqual(payload["error"]["type"], "agent_unavailable")
+        self.assertNotIn("private", str(payload).lower())
+        self.assertNotIn("endpoint", str(payload).lower())
+
+    def test_unexpected_agent_failure_returns_sanitized_500(self) -> None:
+        self.agent_client.generate_response.side_effect = RuntimeError(
+            "private workspace and credential detail"
+        )
+
+        response = self.client.post(
+            "/api/agent",
+            json={"ticker": "AAPL", "question": "What changed?"},
+        )
+
+        self.assertEqual(response.status_code, 500)
+        payload = response.json()
+        self.assertEqual(payload["error"]["type"], "service_error")
+        self.assertNotIn("workspace", str(payload).lower())
+        self.assertNotIn("credential", str(payload).lower())
 
     def test_research_api_delegates_and_strips_vectors(self) -> None:
         self.research_context.build_research_context.return_value = {
@@ -162,6 +249,16 @@ class FrontendAssetSafetyTests(unittest.TestCase):
         self.assertIn('link.target = "_blank"', script)
         self.assertIn('link.rel = "noopener noreferrer"', script)
         self.assertIn('["http:", "https:"]', script)
+
+    def test_agent_failure_keeps_deterministic_research_path(self) -> None:
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('requestResearch("/api/agent"', script)
+        self.assertIn('requestResearch("/api/research"', script)
+        self.assertIn("Promise.allSettled", script)
+        self.assertIn("AI summary is temporarily unavailable", script)
+        self.assertIn("renderResearch(researchOutcome.value)", script)
+        self.assertIn("agentAnswer.textContent", script)
 
     def test_frontend_assets_contain_no_credentials_or_vectors(self) -> None:
         source = "\n".join(

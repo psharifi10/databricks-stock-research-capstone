@@ -4,3 +4,5 @@ command:
 env:
   - name: ENDPOINT_NAME
     valueFrom: postgres
+  - name: SUPERVISOR_ENDPOINT
+    valueFrom: supervisor-agent

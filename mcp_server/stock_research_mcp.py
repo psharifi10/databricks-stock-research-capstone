@@ -21,6 +21,7 @@ from fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
+from app.agent_client import AgentServiceError, SupervisorAgentClient
 from app.repositories import StockRepository
 from app.services import (
     ResearchActionService,
@@ -29,6 +30,7 @@ from app.services import (
 )
 from app.validation import (
     ValidationError,
+    normalize_bounded_text,
     normalize_bounded_limit,
     normalize_ticker,
 )
@@ -68,6 +70,13 @@ def get_services() -> ResearchServices:
         research_context=ResearchContextService(repository, semantic_search),
         actions=ResearchActionService(repository),
     )
+
+
+@lru_cache(maxsize=1)
+def get_agent_client() -> SupervisorAgentClient:
+    """Lazily construct the unified-auth Supervisor client on first use."""
+
+    return SupervisorAgentClient()
 
 
 class _ToolNotFoundError(LookupError):
@@ -200,6 +209,65 @@ async def research_api(request: Request) -> Response:
             _error(
                 "service_error",
                 "The stock research service could not complete the request.",
+            ),
+            status_code=500,
+        )
+
+
+@mcp.custom_route("/api/agent", methods=["POST"])
+async def agent_api(request: Request) -> Response:
+    """Return a grounded synthesis from the configured Supervisor Agent."""
+
+    try:
+        payload = await request.json()
+    except (JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse(
+            _error("validation_error", "A valid JSON object is required."),
+            status_code=400,
+        )
+
+    try:
+        if not isinstance(payload, Mapping):
+            raise ValidationError("A JSON object is required.")
+        symbol = normalize_ticker(payload.get("ticker"))
+        question = normalize_bounded_text(
+            normalize_query_text(payload.get("question")),
+            field_name="Research question",
+            maximum=5000,
+        )
+        prompt = (
+            f"Research ticker {symbol}.\n\n"
+            f"User question:\n{question}\n\n"
+            "Use the available stock research MCP tools when evidence is needed.\n"
+            "Base the answer only on available evidence."
+        )
+        answer = get_agent_client().generate_response(prompt)
+        return JSONResponse(
+            _success(
+                {
+                    "ticker": symbol,
+                    "answer": answer,
+                }
+            )
+        )
+    except (ValidationError, EmbeddingError) as error:
+        return JSONResponse(
+            _error("validation_error", str(error)),
+            status_code=400,
+        )
+    except AgentServiceError:
+        return JSONResponse(
+            _error(
+                "agent_unavailable",
+                "The AI research summary is temporarily unavailable.",
+            ),
+            status_code=503,
+        )
+    except Exception:
+        return JSONResponse(
+            _error(
+                "service_error",
+                "The AI research service could not complete the request.",
             ),
             status_code=500,
         )

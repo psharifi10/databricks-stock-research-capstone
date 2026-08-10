@@ -61,6 +61,22 @@
       </section>
 
       <div id="results" class="results" hidden>
+        <section class="result-card result-card--summary" aria-labelledby="agent-summary-heading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Supervisor Agent</p>
+              <h2 id="agent-summary-heading">AI Research Summary</h2>
+            </div>
+            <span class="agent-badge">Synthesized response</span>
+          </div>
+          <p id="agent-answer" class="agent-answer"></p>
+        </section>
+
+        <div class="grounded-heading">
+          <p class="section-kicker">Evidence details</p>
+          <h2>Grounded Research Data</h2>
+        </div>
+
         <section class="result-card result-card--company" aria-labelledby="company-heading">
           <div class="section-heading">
             <div>
@@ -71,7 +87,7 @@
           <div id="company-content"></div>
         </section>
 
-        <section class="result-card" aria-labelledby="prices-heading">
+        <section class="result-card result-card--prices" aria-labelledby="prices-heading">
           <div class="section-heading section-heading--split">
             <div>
               <p class="section-kicker">Recent prices</p>

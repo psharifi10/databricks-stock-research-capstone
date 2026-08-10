@@ -293,13 +293,14 @@ Mutations require explicit user intent. The MCP server never adds a ticker or sa
 
 ## Phase 8 Databricks App web interface
 
-The existing `mcp-stock-research` Databricks App now serves two boundaries from the same stateless FastMCP process:
+The existing `mcp-stock-research` Databricks App serves the dashboard, deterministic research, Supervisor synthesis, and MCP protocol from the same stateless FastMCP process:
 
 - `/mcp` preserves all nine read/write MCP tools.
 - `/` serves the stock research dashboard.
 - `/api/research` validates a ticker and question, then delegates directly to `ResearchContextService`.
+- `/api/agent` sends a grounded prompt to the configured Supervisor Agent model-serving endpoint.
 
-The dashboard displays persisted company metadata, the latest close and bounded recent prices, ticker-linked recent news, and citation-ready semantic evidence. Browser rendering uses DOM `textContent`; external sources are limited to HTTP(S) links with `target="_blank"` and `rel="noopener noreferrer"`. The frontend receives no vectors, credentials, raw source payloads, or OAuth configuration.
+The dashboard presents the Supervisor's synthesized answer separately above persisted company metadata, the latest close and bounded recent prices, ticker-linked recent news, and citation-ready semantic evidence. If Supervisor synthesis is unavailable, deterministic grounded research still renders. Browser rendering uses DOM `textContent`; external sources are limited to HTTP(S) links with `target="_blank"` and `rel="noopener noreferrer"`. The frontend receives no vectors, credentials, raw source payloads, or OAuth configuration. The Supervisor dashboard integration is implemented but is not claimed as live-validated until the updated app is deployed and tested.
 
 ## Final architecture
 
@@ -307,36 +308,35 @@ The dashboard displays persisted company metadata, the latest close and bounded 
 Massive Stocks API
         |
         v
-ingestion and service layer
+service / ingestion layer
         |
         v
-Lakebase relational tables
+Lakebase relational data
         |
         v
-Spark article extraction and chunking
+Spark unstructured article pipeline
         |
         v
-MiniLM 384-dimensional embeddings
+MiniLM embeddings
         |
         v
 Lakebase vector retrieval
         |
         v
-ResearchContextService
+FastMCP stock research server
         |
         v
-FastMCP Databricks App
+Databricks Supervisor Agent
         |
-        +--> nine MCP tools ------> AI client
-        |
-        +--> /api/research -------> Databricks App web UI
+        v
+Databricks App dashboard
 ```
 
-Massive supplies third-party company, price, and news facts. Spark processes unstructured article bodies into deterministic chunks, MiniLM creates embeddings, and Lakebase stores both relational application data and vector-searchable evidence. `ResearchContextService` assembles bounded semantic RAG-ready context, while the shared FastMCP app exposes safe read/write tools and the web research interface.
+Massive supplies third-party company, price, and news facts. Spark processes unstructured article bodies into deterministic chunks, MiniLM creates embeddings, and Lakebase stores both relational application data and vector-searchable evidence. The FastMCP server exposes nine safe read/write tools over the existing service boundaries. The Supervisor chooses those tools when evidence or an explicit action is needed, while `ResearchContextService` continues to provide separately visible deterministic grounded data.
 
 ## AI client and agent status
 
-The deployed MCP server was successfully connected to an LLM through Databricks AI Playground. The model selected and executed retrieval and explicit write tools against the live MCP endpoint. A dedicated Supervisor Agent was planned but could not be created because the Databricks Free Edition usage quota was reached; no Supervisor Agent deployment is claimed. The MCP server remains agent-ready for that integration when quota is available.
+A Databricks Supervisor Agent named `Stock Research Assistant` was created, and `mcp-stock-research` was registered as its custom MCP tool. Live validation confirmed that the Supervisor selected `build_research_context` for an Apple research question and selected `add_to_watchlist` for an explicit watchlist action. It correctly respected the idempotent no-op result when AAPL was already present. The Databricks App dashboard now integrates with the Supervisor endpoint in source for synthesized responses, while grounded structured research remains separately visible through `ResearchContextService`. This dashboard-to-Supervisor integration still requires deployment and live validation.
 
 ## Live MCP validation
 
@@ -348,6 +348,8 @@ The following deployed behaviors were validated without recording personal email
 - `add_to_watchlist` completed successfully.
 - `save_research_note` completed successfully and returned `note_id` 1.
 - `remove_from_watchlist` was callable and executed correctly; no claim is made that a row was removed when the result was `removed=false`.
+- The Supervisor selected `build_research_context` for a live Apple research question.
+- The Supervisor selected `add_to_watchlist` for an explicit action and preserved the already-present no-op result.
 
 ## Validation Evidence
 
@@ -360,8 +362,8 @@ The following deployed behaviors were validated without recording personal email
 - [x] Unstructured data processing — article extraction with grounded metadata fallback
 - [x] Lakebase relational tables — ten normalized application/research entities
 - [x] Embeddings, vector retrieval, and RAG context — MiniLM, cosine search, and `ResearchContextService`
-- [x] AI read/write tool use — nine MCP tools exercised through Databricks AI Playground
-- [x] Databricks App frontend — implemented in the existing FastMCP app; redeployment is the remaining operational step
+- [x] AI read/write tool use — Supervisor-selected MCP retrieval and explicit write actions
+- [x] Databricks App frontend — deterministic research validated live; Supervisor summary integration implemented with redeployment and live validation pending
 
 ## Submission hygiene
 
@@ -411,23 +413,24 @@ The repository ignores local virtual environments, `.env` files, Python and test
 - Persist 384-dimensional vectors through a Serverless-safe Lakebase Data API update.
 - Retrieve bounded citation-ready chunks through the Lakebase cosine ANN index.
 
-### Phase 5 — MCP server and AI client integration (complete within available quota)
+### Phase 5 — MCP server and Supervisor Agent integration (complete)
 
 - Host a FastMCP server as a Databricks App.
 - Expose thin tools for company data, historical performance, semantic news search, watchlist reads/writes, research notes, and analysis reports.
 - Add structured, client-safe errors and tests proving tool delegation.
-- Validate model-selected retrieval and write-tool execution through Databricks AI Playground.
-- Keep the MCP server ready for a dedicated Supervisor Agent when Free Edition quota is available.
+- Register the MCP server as the Supervisor Agent's custom tool.
+- Validate Supervisor-selected grounded retrieval and explicit write-tool execution.
 
 ### Phase 8 — Frontend implementation (complete; redeployment pending)
 
 - Serve a compact research interface from the existing FastMCP Databricks App.
 - Reuse `ResearchContextService` for company, price, news, and semantic evidence.
+- Display a Supervisor-generated synthesis separately without replacing deterministic research.
 - Preserve safe browser rendering, MCP behavior, and credential isolation.
 
 ### Phase 9 — Submission documentation and hygiene (complete)
 
-- Record final architecture, live validation, quota limitations, and rubric alignment.
+- Record final architecture, live validation status, and rubric alignment.
 - Review privacy, secret handling, ignored local artifacts, and safe failure paths.
 - Keep final deployment and submission packaging as explicit operator steps.
 

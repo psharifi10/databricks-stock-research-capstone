@@ -325,8 +325,10 @@ class McpSourceAndDeploymentTests(unittest.TestCase):
 
     def test_import_composes_no_services_or_database_connection(self) -> None:
         server.get_services.cache_clear()
+        server.get_agent_client.cache_clear()
 
         self.assertEqual(server.get_services.cache_info().currsize, 0)
+        self.assertEqual(server.get_agent_client.cache_info().currsize, 0)
         self.assertNotIn("database_connection(", self.source)
 
     def test_server_has_no_massive_llm_or_trading_behavior(self) -> None:
@@ -364,7 +366,11 @@ class McpSourceAndDeploymentTests(unittest.TestCase):
                     {
                         "name": "ENDPOINT_NAME",
                         "valueFrom": "postgres",
-                    }
+                    },
+                    {
+                        "name": "SUPERVISOR_ENDPOINT",
+                        "valueFrom": "supervisor-agent",
+                    },
                 ],
             },
         )
