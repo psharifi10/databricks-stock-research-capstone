@@ -13,6 +13,7 @@ import psycopg
 from app.db import database_connection
 from app.validation import (
     ValidationError,
+    normalize_bounded_limit,
     normalize_email,
     normalize_ticker,
     normalize_top_k,
@@ -36,6 +37,22 @@ class StockRepository:
         connection_factory: ConnectionFactory = database_connection,
     ) -> None:
         self._connection_factory = connection_factory
+
+    def get_company(self, ticker: str) -> dict[str, Any] | None:
+        symbol = normalize_ticker(ticker)
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT ticker, name, description, industry,
+                           market_cap, exchange
+                    FROM companies
+                    WHERE ticker = %s
+                    """,
+                    (symbol,),
+                )
+                row = cursor.fetchone()
+                return dict(row) if row is not None else None
 
     def get_or_create_user(self, email: str) -> dict[str, Any]:
         normalized_email = normalize_email(email)
@@ -226,6 +243,39 @@ class StockRepository:
                     ORDER BY price_date ASC
                     """,
                     (symbol, start_date, start_date, end_date, end_date),
+                )
+                return [dict(row) for row in cursor.fetchall()]
+
+    def list_recent_prices(
+        self,
+        ticker: str,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Return the latest bounded price window in chronological order."""
+
+        symbol = normalize_ticker(ticker)
+        bounded_limit = normalize_bounded_limit(
+            limit,
+            field_name="Price history limit",
+            maximum=100,
+        )
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT ticker, price_date, open, high, low, close,
+                           volume, vwap
+                    FROM (
+                        SELECT ticker, price_date, open, high, low, close,
+                               volume, vwap
+                        FROM price_snapshots
+                        WHERE ticker = %s
+                        ORDER BY price_date DESC
+                        LIMIT %s
+                    ) AS recent_prices
+                    ORDER BY price_date ASC
+                    """,
+                    (symbol, bounded_limit),
                 )
                 return [dict(row) for row in cursor.fetchall()]
 

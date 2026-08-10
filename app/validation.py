@@ -54,3 +54,22 @@ def normalize_top_k(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValidationError("top_k must be a positive integer.")
     return min(value, MAX_SEMANTIC_SEARCH_RESULTS)
+
+
+def normalize_bounded_limit(
+    value: int,
+    *,
+    field_name: str,
+    maximum: int,
+) -> int:
+    """Validate a positive integer limit without silently exceeding its bound."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= maximum
+    ):
+        raise ValidationError(
+            f"{field_name} must be an integer between 1 and {maximum}."
+        )
+    return value

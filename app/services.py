@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from app.massive_client import MassiveClient
 from app.repositories import StockRepository
-from app.validation import normalize_ticker, normalize_top_k
+from app.validation import (
+    MAX_SEMANTIC_SEARCH_RESULTS,
+    normalize_bounded_limit,
+    normalize_ticker,
+    normalize_top_k,
+)
 from pipelines.embeddings import (
     QueryEmbeddingService,
     normalize_query_text,
@@ -98,3 +105,150 @@ class SemanticNewsSearchService:
             ticker=symbol,
             top_k=limit,
         )
+
+
+class ResearchContextService:
+    """Assemble deterministic, citation-ready Lakebase research evidence."""
+
+    def __init__(
+        self,
+        repository: StockRepository,
+        semantic_search_service: SemanticNewsSearchService,
+    ) -> None:
+        self._repository = repository
+        self._semantic_search_service = semantic_search_service
+
+    def build_research_context(
+        self,
+        ticker: str,
+        question: str,
+        *,
+        semantic_top_k: int = 8,
+        recent_news_limit: int = 5,
+        price_history_limit: int = 30,
+    ) -> dict[str, Any]:
+        symbol = normalize_ticker(ticker)
+        normalized_question = normalize_query_text(question)
+        evidence_limit = normalize_top_k(semantic_top_k)
+        news_limit = normalize_bounded_limit(
+            recent_news_limit,
+            field_name="Recent news limit",
+            maximum=100,
+        )
+        price_limit = normalize_bounded_limit(
+            price_history_limit,
+            field_name="Price history limit",
+            maximum=100,
+        )
+        candidate_limit = min(
+            MAX_SEMANTIC_SEARCH_RESULTS,
+            evidence_limit * 2,
+        )
+
+        company = self._repository.get_company(symbol)
+        prices = self._repository.list_recent_prices(symbol, price_limit)
+        recent_news = self._repository.list_recent_news(symbol, news_limit)
+        semantic_candidates = self._semantic_search_service.semantic_news_search(
+            normalized_question,
+            ticker=symbol,
+            top_k=candidate_limit,
+        )
+
+        context = {
+            "ticker": symbol,
+            "question": normalized_question,
+            "company": _company_context(company),
+            "prices": [_price_context(row) for row in prices],
+            "recent_news": [_recent_news_context(row) for row in recent_news],
+            "semantic_evidence": _diversify_semantic_evidence(
+                semantic_candidates,
+                ticker=symbol,
+                limit=evidence_limit,
+            ),
+        }
+        return _json_safe(context)
+
+
+def _company_context(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "ticker": row.get("ticker"),
+        "name": row.get("name"),
+        "description": row.get("description"),
+        "industry": row.get("industry"),
+        "market_cap": row.get("market_cap"),
+        "exchange": row.get("exchange"),
+    }
+
+
+def _price_context(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "ticker": row.get("ticker"),
+        "price_date": row.get("price_date"),
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+        "volume": row.get("volume"),
+        "vwap": row.get("vwap"),
+    }
+
+
+def _recent_news_context(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "article_id": row.get("id"),
+        "title": row.get("title"),
+        "publisher": row.get("publisher"),
+        "published_at": row.get("published_at"),
+        "sentiment": row.get("sentiment"),
+        "sentiment_reasoning": row.get("sentiment_reasoning"),
+        "article_url": row.get("article_url"),
+    }
+
+
+def _diversify_semantic_evidence(
+    candidates: list[dict[str, Any]],
+    *,
+    ticker: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    diversified: list[dict[str, Any]] = []
+    article_counts: dict[str, int] = {}
+    for candidate in candidates:
+        article_id = str(candidate.get("article_id") or "").strip()
+        if not article_id or article_counts.get(article_id, 0) >= 2:
+            continue
+        diversified.append(
+            {
+                "article_id": article_id,
+                "chunk_index": candidate.get("chunk_index"),
+                "chunk_text": candidate.get("chunk_text"),
+                "title": candidate.get("title"),
+                "publisher": candidate.get("publisher_name"),
+                "published_at": candidate.get("published_at"),
+                "article_url": candidate.get("article_url"),
+                "ticker": candidate.get("ticker") or ticker,
+                "sentiment": candidate.get("sentiment"),
+                "sentiment_reasoning": candidate.get("sentiment_reasoning"),
+                "similarity": candidate.get("similarity"),
+            }
+        )
+        article_counts[article_id] = article_counts.get(article_id, 0) + 1
+        if len(diversified) == limit:
+            break
+    return diversified
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return str(value)

@@ -100,6 +100,32 @@ class StockRepositoryTests(unittest.TestCase):
         self.assertEqual(json.loads(parameters[-1]), company["raw_source_payload"])
         self.assertNotIn("Apple Inc.", sql)
 
+    def test_get_company_uses_parameterized_ticker_lookup(self) -> None:
+        self.cursor.fetchone.return_value = {
+            "ticker": "AAPL",
+            "name": "Apple Inc.",
+            "description": "Technology company",
+            "industry": "Technology Hardware",
+            "market_cap": 3000000000000,
+            "exchange": "XNAS",
+        }
+
+        company = self.repository.get_company(" aapl ")
+
+        sql, parameters = self.cursor.execute.call_args.args
+        compact_sql = _compact_sql(sql)
+        self.assertIn("FROM companies", compact_sql)
+        self.assertIn("WHERE ticker = %s", compact_sql)
+        self.assertEqual(parameters, ("AAPL",))
+        self.assertEqual(company["name"], "Apple Inc.")
+
+    def test_get_company_returns_none_when_missing(self) -> None:
+        self.cursor.fetchone.return_value = None
+
+        company = self.repository.get_company("AAPL")
+
+        self.assertIsNone(company)
+
     def test_price_upsert_uses_composite_conflict_key(self) -> None:
         rows = [
             {
@@ -123,6 +149,22 @@ class StockRepositoryTests(unittest.TestCase):
         self.assertEqual(parameters[0][0], "AAPL")
         self.assertEqual(parameters[0][1], date(2026, 8, 8))
         self.assertEqual(count, 1)
+
+    def test_recent_prices_select_latest_window_then_return_chronologically(self) -> None:
+        self.cursor.fetchall.return_value = [
+            {"ticker": "AAPL", "price_date": date(2026, 8, 7)},
+            {"ticker": "AAPL", "price_date": date(2026, 8, 8)},
+        ]
+
+        rows = self.repository.list_recent_prices(" aapl ", 30)
+
+        sql, parameters = self.cursor.execute.call_args.args
+        compact_sql = _compact_sql(sql)
+        self.assertIn("FROM price_snapshots", compact_sql)
+        self.assertIn("ORDER BY price_date DESC LIMIT %s", compact_sql)
+        self.assertTrue(compact_sql.endswith("ORDER BY price_date ASC"))
+        self.assertEqual(parameters, ("AAPL", 30))
+        self.assertEqual(rows[0]["price_date"], date(2026, 8, 7))
 
     def test_news_upsert_associates_tickers_with_individual_sentiment(self) -> None:
         article = {

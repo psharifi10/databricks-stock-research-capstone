@@ -218,6 +218,31 @@ Application-side semantic retrieval remains independent of Spark. `QueryEmbeddin
 
 The Phase 4B implementation is offline-tested only. The migration, embedding notebook, and live semantic query have not yet been executed against Databricks or Lakebase. LLM answer generation and RAG synthesis remain out of scope.
 
+## Phase 5A grounded research context
+
+Phase 5A assembles deterministic, JSON-serializable evidence without calling an LLM:
+
+```text
+research question
+       |
+       v
+query embedding
+       |
+       v
+Lakebase cosine retrieval
+       |
+       v
+article diversification (at most two chunks per article)
+       |
+       v
+structured Lakebase company, price, news, and semantic evidence
+       |
+       v
+bounded research context
+```
+
+`ResearchContextService` combines persisted company metadata, a bounded recent price window, ticker-specific recent news, and citation-ready semantic chunks. It preserves retrieval order, source URLs, article and chunk identifiers, publication metadata, sentiment, and similarity while excluding vectors from the returned context. `scripts/build_research_context.py` provides a concise local preview of counts and evidence titles. LLM generation, agent behavior, MCP tools, and citation prose remain deferred to later phases.
+
 ## Proposed architecture
 
 ```text
