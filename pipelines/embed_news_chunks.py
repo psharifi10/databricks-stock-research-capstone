@@ -51,11 +51,18 @@ def _safe_postgrest_code(value: object) -> str | None:
 
 
 def _safe_postgrest_message(value: object) -> str | None:
+    import re
+
     if not isinstance(value, str):
         return None
     message = " ".join(value.split())
     if not message:
         return None
+
+    numeric_array = re.compile(
+        r"\[(?:\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*,?)+\]"
+    )
+    message = numeric_array.sub("[redacted]", message)
 
     lowered = message.lower()
     sensitive_markers = (
@@ -65,18 +72,47 @@ def _safe_postgrest_message(value: object) -> str | None:
         "token",
         "password",
         "secret",
-        "p_embedding",
         "payload",
     )
-    structured_markers = ("[", "]", "{", "}", "://")
-    if any(marker in lowered for marker in sensitive_markers) or any(
-        marker in message for marker in structured_markers
-    ):
+    if any(marker in lowered for marker in sensitive_markers):
+        return None
+    if any(marker in message for marker in ("{", "}", "://")):
+        return None
+    remaining = message.replace("[]", "").replace("[redacted]", "")
+    if "[" in remaining or "]" in remaining:
         return None
     return message[:DATA_API_ERROR_MESSAGE_LIMIT]
 
 
-def _data_api_http_failure(response: object) -> RuntimeError:
+def _safe_content_type(response: object) -> str:
+    import re
+
+    headers = getattr(response, "headers", {})
+    if not hasattr(headers, "get"):
+        return "unknown"
+    value = headers.get("Content-Type")
+    if not isinstance(value, str):
+        return "unknown"
+    content_type = " ".join(value.split())[:100]
+    if not re.fullmatch(r"[A-Za-z0-9!#$&^_.+*/;= -]+", content_type):
+        return "unknown"
+    return content_type
+
+
+def _safe_json_keys(body: object) -> tuple[str, ...]:
+    import re
+
+    if not isinstance(body, dict):
+        return ()
+    keys = (
+        key
+        for key in body
+        if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", key)
+    )
+    return tuple(sorted(keys))[:10]
+
+
+def _data_api_response_summary(response: object) -> str:
     raw_status = getattr(response, "status_code", None)
     status = (
         raw_status
@@ -88,21 +124,33 @@ def _data_api_http_failure(response: object) -> RuntimeError:
     except (TypeError, ValueError):
         body = None
 
+    metadata = [f"HTTP {status}", f"content-type={_safe_content_type(response)}"]
+    json_keys = _safe_json_keys(body)
+    if json_keys:
+        metadata.append(f"json_keys={','.join(json_keys)}")
+
     code = None
-    message = None
+    safe_fields = []
     if isinstance(body, dict):
         code = _safe_postgrest_code(body.get("code"))
-        message = _safe_postgrest_message(body.get("message"))
-
-    detail = f"HTTP {status}"
+        for field in ("message", "details", "hint"):
+            value = _safe_postgrest_message(body.get(field))
+            if value is not None:
+                safe_fields.append(f"{field}={value}")
     if code is not None:
-        detail += f", code={code}"
-    summary = f"Lakebase embedding persistence failed ({detail})"
-    if message is not None:
-        summary += f": {message}"
-    else:
-        summary += "."
-    return RuntimeError(summary)
+        metadata.append(f"code={code}")
+
+    summary = ", ".join(metadata)
+    if safe_fields:
+        summary += ": " + "; ".join(safe_fields)
+    return summary
+
+
+def _data_api_http_failure(response: object) -> RuntimeError:
+    return RuntimeError(
+        "Lakebase embedding persistence failed "
+        f"({_data_api_response_summary(response)})"
+    )
 
 
 # COMMAND ----------
@@ -326,6 +374,39 @@ if embedded_chunks > 0:
         }
     )
     try:
+        diagnostic_row = embedded_rows[0]
+        diagnostic_payload = {
+            "p_article_id": str(diagnostic_row.article_id),
+            "p_chunk_index": int(diagnostic_row.chunk_index),
+            "p_embedding": [0.0] * EMBEDDING_DIMENSION,
+            "p_embedding_model": "phase4b-data-api-diagnostic",
+        }
+        try:
+            diagnostic_response = session.post(
+                rpc_url,
+                json=diagnostic_payload,
+                headers={"Prefer": "tx=rollback"},
+                timeout=30,
+            )
+        except requests.Timeout:
+            raise RuntimeError("Data API diagnostic RPC timed out.") from None
+        except requests.ConnectionError:
+            raise RuntimeError(
+                "Data API diagnostic RPC connection failed."
+            ) from None
+        except requests.RequestException:
+            raise RuntimeError("Data API diagnostic RPC request failed.") from None
+        try:
+            diagnostic_response.raise_for_status()
+        except requests.HTTPError:
+            raise _data_api_http_failure(diagnostic_response) from None
+
+        print(
+            "Data API diagnostic response: "
+            f"{_data_api_response_summary(diagnostic_response)}"
+        )
+        raise RuntimeError("Data API diagnostic RPC succeeded.")
+
         for row in embedded_rows:
             payload = {
                 "p_article_id": str(row.article_id),

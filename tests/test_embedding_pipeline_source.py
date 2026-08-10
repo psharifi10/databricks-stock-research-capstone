@@ -20,6 +20,9 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         helper_names = {
             "_safe_postgrest_code",
             "_safe_postgrest_message",
+            "_safe_content_type",
+            "_safe_json_keys",
+            "_data_api_response_summary",
             "_data_api_http_failure",
         }
         helper_nodes = []
@@ -111,36 +114,50 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
         response = _FakeResponse(
             403,
             {"code": "42501", "message": "permission denied for function"},
+            content_type="application/json",
         )
 
         error = self.data_api_http_failure(response)
 
         self.assertEqual(
             str(error),
-            "Lakebase embedding persistence failed (HTTP 403, code=42501): "
-            "permission denied for function",
+            "Lakebase embedding persistence failed (HTTP 403, "
+            "content-type=application/json, json_keys=code,message, "
+            "code=42501: message=permission denied for function)",
         )
 
     def test_data_api_error_message_is_bounded(self) -> None:
-        response = _FakeResponse(404, {"code": "PGRST202", "message": "x" * 500})
+        response = _FakeResponse(
+            404,
+            {"code": "PGRST202", "message": "x" * 500},
+            content_type="application/json; charset=utf-8",
+        )
 
         message = str(self.data_api_http_failure(response))
 
-        self.assertIn("HTTP 404, code=PGRST202", message)
-        self.assertEqual(message.rsplit(": ", 1)[1], "x" * 200)
+        self.assertIn("HTTP 404", message)
+        self.assertIn("code=PGRST202", message)
+        self.assertIn("content-type=application/json; charset=utf-8", message)
+        self.assertTrue(message.endswith(f"message={'x' * 200})"))
 
     def test_data_api_error_never_surfaces_sensitive_or_structured_message(self) -> None:
         sensitive = (
             "Authorization: Bearer oauth-token-secret "
             "p_embedding=[0.1,0.2] payload={private}"
         )
-        response = _FakeResponse(403, {"code": "42501", "message": sensitive})
+        response = _FakeResponse(
+            403,
+            {"code": "42501", "message": sensitive},
+            content_type="application/json",
+        )
 
         message = str(self.data_api_http_failure(response))
 
         self.assertEqual(
             message,
-            "Lakebase embedding persistence failed (HTTP 403, code=42501).",
+            "Lakebase embedding persistence failed (HTTP 403, "
+            "content-type=application/json, json_keys=code,message, "
+            "code=42501)",
         )
         for forbidden in (
             "Authorization",
@@ -151,24 +168,88 @@ class EmbedNewsChunksNotebookTests(unittest.TestCase):
             self.assertNotIn(forbidden, message)
 
     def test_data_api_non_json_error_retains_status_without_raw_body(self) -> None:
-        response = _FakeResponse(502, ValueError("not JSON"))
+        response = _FakeResponse(
+            502,
+            ValueError("not JSON"),
+            content_type="text/plain",
+        )
 
         message = str(self.data_api_http_failure(response))
 
         self.assertEqual(
             message,
-            "Lakebase embedding persistence failed (HTTP 502).",
+            "Lakebase embedding persistence failed "
+            "(HTTP 502, content-type=text/plain)",
         )
         self.assertNotIn("response.text", self.source)
         self.assertNotIn("response.content", self.source)
         self.assertIn("except requests.Timeout:", self.source)
         self.assertIn("except requests.ConnectionError:", self.source)
 
+    def test_postgres_type_notation_survives_while_numeric_arrays_are_redacted(self) -> None:
+        response = _FakeResponse(
+            400,
+            {
+                "code": "42804",
+                "details": (
+                    "argument p_embedding has type real[] but numeric value "
+                    "[0.1, -2e-3, 3] was rejected"
+                ),
+                "hint": "Use the declared RPC argument type.",
+            },
+            content_type="application/json",
+        )
+
+        message = str(self.data_api_http_failure(response))
+
+        self.assertIn("json_keys=code,details,hint", message)
+        self.assertIn("real[]", message)
+        self.assertIn("[redacted]", message)
+        self.assertNotIn("[0.1, -2e-3, 3]", message)
+        self.assertIn("hint=Use the declared RPC argument type.", message)
+
+    def test_rollback_diagnostic_runs_once_before_normal_persistence(self) -> None:
+        diagnostic_start = self.source.index("diagnostic_row = embedded_rows[0]")
+        normal_loop = self.source.index("for row in embedded_rows:", diagnostic_start)
+        diagnostic_source = self.source[diagnostic_start:normal_loop]
+
+        self.assertEqual(diagnostic_source.count("session.post("), 1)
+        self.assertIn('headers={"Prefer": "tx=rollback"}', diagnostic_source)
+        self.assertIn(
+            '"p_article_id": str(diagnostic_row.article_id)',
+            diagnostic_source,
+        )
+        self.assertIn(
+            '"p_chunk_index": int(diagnostic_row.chunk_index)',
+            diagnostic_source,
+        )
+        self.assertIn('"p_embedding": [0.0] * EMBEDDING_DIMENSION', diagnostic_source)
+        self.assertIn(
+            '"p_embedding_model": "phase4b-data-api-diagnostic"',
+            diagnostic_source,
+        )
+        self.assertIn(
+            'raise RuntimeError("Data API diagnostic RPC succeeded.")',
+            diagnostic_source,
+        )
+        self.assertIn("diagnostic_response.raise_for_status()", diagnostic_source)
+
 
 class _FakeResponse:
-    def __init__(self, status_code: int, body: object) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        body: object,
+        *,
+        content_type: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self._body = body
+        self.headers = (
+            {"Content-Type": content_type}
+            if content_type is not None
+            else {}
+        )
 
     def json(self) -> object:
         if isinstance(self._body, Exception):
