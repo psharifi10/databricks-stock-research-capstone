@@ -236,6 +236,40 @@ class MassiveClientTests(unittest.TestCase):
             "Bearer unit-test-key",
         )
 
+    def test_one_page_limit_does_not_follow_next_url(self) -> None:
+        self.session.get.return_value = _response(
+            {
+                "results": [
+                    {
+                        "id": "one",
+                        "title": "First",
+                        "published_utc": "2026-08-09T12:00:00Z",
+                        "tickers": ["AAPL"],
+                    }
+                ],
+                "next_url": "https://api.massive.com/v2/reference/news?cursor=next",
+            }
+        )
+
+        articles = self.client.get_news("AAPL", limit=5, max_pages=1)
+
+        self.assertEqual([article["id"] for article in articles], ["one"])
+        self.assertEqual(self.session.get.call_count, 1)
+
+    def test_http_status_is_preserved_without_response_details(self) -> None:
+        response = _response({})
+        response.status_code = 429
+        response.raise_for_status.side_effect = requests.HTTPError(
+            "authorization detail that must stay hidden",
+            response=response,
+        )
+        self.session.get.return_value = response
+
+        with self.assertRaisesRegex(MassiveClientError, "HTTP 429") as raised:
+            self.client.get_company_overview("AAPL")
+
+        self.assertNotIn("authorization detail", str(raised.exception))
+
     def test_timeout_becomes_safe_error_without_key_leak(self) -> None:
         self.session.get.side_effect = requests.Timeout(
             "timeout while using unit-test-key"

@@ -2,7 +2,7 @@
 
 An educational, production-minded capstone that helps a user research public companies using grounded market data and financial news. The project will combine a Databricks-hosted frontend, Lakebase application storage, Spark ingestion and enrichment, semantic retrieval, MCP tools, and a Databricks Agent Bricks supervisor.
 
-Phases 1 and 2 establish the relational schema, configuration/database boundary, and Massive-backed service layer. Phase 3B adds Lakebase Autoscaling OAuth connectivity and schema administration scripts. Application routes, pipelines, embeddings, retrieval, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
+Phases 1 and 2 establish the relational schema, configuration/database boundary, and Massive-backed service layer. Phases 3B and 3C add Lakebase Autoscaling OAuth connectivity and validate the live stock-data ingestion path. Application routes, pipelines, embeddings, retrieval, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
 
 ## Capstone requirements
 
@@ -106,6 +106,35 @@ The local Databricks CLI profile must already be authenticated to the target wor
 
 `check_lakebase.py` prints only the connected user and database. `apply_schema.py` executes the canonical idempotent `sql/001_core_schema.sql` in the normal transaction boundary and never seeds data. `verify_schema.py` succeeds only when the public schema contains exactly the ten expected MVP tables. These commands are manual live operations and are not part of the offline unit-test suite.
 
+## Phase 3C live stock-data validation
+
+The existing application path was successfully validated end to end against the real Massive Stocks API and Lakebase Autoscaling:
+
+```text
+Massive Stocks API
+        |
+        v
+   MassiveClient
+        |
+        v
+StockResearchService
+        |
+        v
+  StockRepository
+        |
+        v
+Lakebase Autoscaling
+```
+
+The bounded AAPL validation confirmed company metadata, nine historical daily aggregate bars, and five recent financial-news articles. Real multi-ticker article relationships remained normalized, and AAPL-specific sentiment was returned from `news_article_tickers`.
+
+After a rate-limit-aware second refresh of the same range, the counts remained stable at one company row, nine price rows, five distinct associated articles, and five AAPL article associations. The company timestamp advanced, confirming that existing records were updated instead of duplicated.
+
+The live validation scripts are:
+
+- `scripts/refresh_stock_data.py` for the bounded Massive-to-Lakebase refresh
+- `scripts/verify_stock_data.py` for database-only counts and relational checks
+
 ## Proposed architecture
 
 ```text
@@ -166,11 +195,17 @@ The frontend and MCP server are separate deployment units. Shared business rules
 - Add reusable company, historical-price, news, and watchlist services.
 - Persist source timestamps and provenance with market facts.
 
-### Phase 3B — Lakebase Autoscaling connectivity (current)
+### Phase 3B — Lakebase Autoscaling connectivity (complete)
 
 - Generate short-lived Lakebase credentials through the Databricks SDK for each new OAuth connection.
 - Provide safe connection, idempotent schema-application, and exact schema-verification scripts.
 - Keep all ordinary unit tests offline through injected clients and connections.
+
+### Phase 3C — Live stock-data ingestion validation (complete)
+
+- Validate company, daily-bar, and recent-news ingestion against Massive and Lakebase Autoscaling.
+- Confirm normalized multi-ticker news relationships and ticker-specific sentiment.
+- Confirm idempotent repeated refreshes without duplicate company, price, article, or association rows.
 
 ### Phase 3 — Spark news and embedding pipeline
 

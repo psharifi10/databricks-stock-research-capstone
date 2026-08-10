@@ -65,6 +65,8 @@ class MassiveClient:
         ticker: str,
         start_date: date | str,
         end_date: date | str,
+        *,
+        max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch available daily bars without filling non-trading dates."""
 
@@ -81,6 +83,7 @@ class MassiveClient:
         rows = self._collect_results(
             path,
             params={"adjusted": "true", "sort": "asc", "limit": 50000},
+            max_pages=max_pages,
         )
         return [_normalize_price_bar(row, symbol) for row in rows]
 
@@ -90,6 +93,7 @@ class MassiveClient:
         *,
         limit: int = 25,
         published_after: date | datetime | str | None = None,
+        max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch and normalize recent news for one ticker."""
 
@@ -116,6 +120,7 @@ class MassiveClient:
             "/v2/reference/news",
             params=params,
             max_results=limit,
+            max_pages=max_pages,
         )
         return [_normalize_news_article(article) for article in articles]
 
@@ -130,14 +135,27 @@ class MassiveClient:
         *,
         params: dict[str, Any] | None = None,
         max_results: int | None = None,
+        max_pages: int | None = None,
     ) -> list[Mapping[str, Any]]:
+        if (
+            max_pages is not None
+            and (
+                isinstance(max_pages, bool)
+                or not isinstance(max_pages, int)
+                or max_pages < 1
+            )
+        ):
+            raise ValidationError("max_pages must be a positive integer.")
+
         results: list[Mapping[str, Any]] = []
         target = path
         request_params = params
         followed_urls: set[str] = set()
+        pages_fetched = 0
 
         while True:
             payload = self._request_json(target, params=request_params)
+            pages_fetched += 1
             page_results = payload.get("results", [])
             if not isinstance(page_results, list) or not all(
                 isinstance(item, Mapping) for item in page_results
@@ -153,6 +171,8 @@ class MassiveClient:
                 results.extend(page_results)
 
             if max_results is not None and len(results) >= max_results:
+                break
+            if max_pages is not None and pages_fetched >= max_pages:
                 break
 
             next_url = payload.get("next_url")
@@ -173,6 +193,7 @@ class MassiveClient:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = self._resolve_url(target)
+        response: requests.Response | None = None
         try:
             response = self._session.get(
                 url,
@@ -181,14 +202,24 @@ class MassiveClient:
             )
             response.raise_for_status()
             payload = response.json()
-        except requests.RequestException as error:
+        except requests.HTTPError as error:
+            error_response = error.response or response
+            status_code = getattr(error_response, "status_code", None)
+            status_context = (
+                f" with HTTP {status_code}" if isinstance(status_code, int) else ""
+            )
+            raise MassiveClientError(
+                "The Massive market-data service request failed"
+                f"{status_context}."
+            ) from None
+        except requests.RequestException:
             raise MassiveClientError(
                 "The Massive market-data service request failed. Please try again."
-            ) from error
-        except ValueError as error:
+            ) from None
+        except ValueError:
             raise MassiveClientError(
                 "The Massive market-data service returned invalid JSON."
-            ) from error
+            ) from None
 
         if not isinstance(payload, dict):
             raise MassiveClientError(

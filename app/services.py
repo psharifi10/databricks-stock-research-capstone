@@ -32,12 +32,15 @@ class StockResearchService:
         ticker: str,
         start_date: date | str,
         end_date: date | str,
+        *,
+        max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         symbol = normalize_ticker(ticker)
         rows = self._massive_client.get_historical_prices(
             symbol,
             start_date,
             end_date,
+            max_pages=max_pages,
         )
         self._repository.upsert_price_snapshots(symbol, rows)
         return rows
@@ -48,12 +51,14 @@ class StockResearchService:
         *,
         limit: int = 25,
         published_after: date | datetime | str | None = None,
+        max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         symbol = normalize_ticker(ticker)
         articles = self._massive_client.get_news(
             symbol,
             limit=limit,
             published_after=published_after,
+            max_pages=max_pages,
         )
         self._repository.upsert_news_articles(articles)
         return articles

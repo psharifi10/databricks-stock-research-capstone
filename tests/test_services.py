@@ -37,6 +37,7 @@ class StockResearchServiceTests(unittest.TestCase):
             "AAPL",
             "2026-08-01",
             "2026-08-08",
+            max_pages=None,
         )
         self.repository.upsert_price_snapshots.assert_called_once_with(
             "AAPL",
@@ -62,6 +63,7 @@ class StockResearchServiceTests(unittest.TestCase):
             "AAPL",
             limit=5,
             published_after=None,
+            max_pages=None,
         )
         self.repository.upsert_news_articles.assert_called_once_with(articles)
         self.assertIs(result, articles)
