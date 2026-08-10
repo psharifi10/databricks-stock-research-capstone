@@ -177,7 +177,9 @@ The Databricks notebook source is `pipelines/process_news_content.py`. On Databr
 
 The local application continues to use psycopg and repository-level replacement semantics through `app/db.py` and `app/repositories.py`. The Databricks Spark pipeline uses Spark PostgreSQL/JDBC reads and the bundled PostgreSQL writer, avoiding native psycopg and direct-JVM dependencies in the Databricks Python process.
 
-Embeddings, vector storage, semantic search, and RAG are intentionally deferred to Phase 4B. The Phase 4A notebook has not yet been live-validated in a Databricks Spark runtime.
+The Phase 4A Spark PostgreSQL read/write path was successfully live-validated on Databricks Serverless. The first run extracted all five eligible article bodies and persisted 20 chunks. A second run produced zero eligible articles, confirming that the left anti join prevents already-processed articles from being written again.
+
+Embeddings, vector storage, semantic search, and RAG are intentionally deferred to Phase 4B.
 
 ## Proposed architecture
 
