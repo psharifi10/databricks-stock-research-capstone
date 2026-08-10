@@ -36,6 +36,75 @@ from pyspark.sql.types import (
 from pipelines.embeddings import EMBEDDING_DIMENSION, EMBEDDING_MODEL_NAME
 
 
+DATA_API_ERROR_MESSAGE_LIMIT = 200
+
+
+def _safe_postgrest_code(value: object) -> str | None:
+    import re
+
+    if not isinstance(value, str):
+        return None
+    code = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", code):
+        return None
+    return code
+
+
+def _safe_postgrest_message(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    message = " ".join(value.split())
+    if not message:
+        return None
+
+    lowered = message.lower()
+    sensitive_markers = (
+        "authorization",
+        "bearer ",
+        "oauth",
+        "token",
+        "password",
+        "secret",
+        "p_embedding",
+        "payload",
+    )
+    structured_markers = ("[", "]", "{", "}", "://")
+    if any(marker in lowered for marker in sensitive_markers) or any(
+        marker in message for marker in structured_markers
+    ):
+        return None
+    return message[:DATA_API_ERROR_MESSAGE_LIMIT]
+
+
+def _data_api_http_failure(response: object) -> RuntimeError:
+    raw_status = getattr(response, "status_code", None)
+    status = (
+        raw_status
+        if isinstance(raw_status, int) and not isinstance(raw_status, bool)
+        else "unknown"
+    )
+    try:
+        body = response.json()
+    except (TypeError, ValueError):
+        body = None
+
+    code = None
+    message = None
+    if isinstance(body, dict):
+        code = _safe_postgrest_code(body.get("code"))
+        message = _safe_postgrest_message(body.get("message"))
+
+    detail = f"HTTP {status}"
+    if code is not None:
+        detail += f", code={code}"
+    summary = f"Lakebase embedding persistence failed ({detail})"
+    if message is not None:
+        summary += f": {message}"
+    else:
+        summary += "."
+    return RuntimeError(summary)
+
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -266,11 +335,22 @@ if embedded_chunks > 0:
             }
             try:
                 response = session.post(rpc_url, json=payload, timeout=30)
-                response.raise_for_status()
+            except requests.Timeout:
+                raise RuntimeError(
+                    "Lakebase embedding persistence timed out."
+                ) from None
+            except requests.ConnectionError:
+                raise RuntimeError(
+                    "Lakebase embedding persistence connection failed."
+                ) from None
             except requests.RequestException:
                 raise RuntimeError(
-                    "Lakebase embedding persistence failed."
+                    "Lakebase embedding persistence request failed."
                 ) from None
+            try:
+                response.raise_for_status()
+            except requests.HTTPError:
+                raise _data_api_http_failure(response) from None
             persisted_chunks += 1
     finally:
         session.close()
