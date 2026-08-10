@@ -1,8 +1,8 @@
 # Databricks AI Stock Market Research Assistant
 
-An educational, production-minded capstone that helps a user research public companies using grounded market data and financial news. The project will combine a Databricks-hosted frontend, Lakebase application storage, Spark ingestion and enrichment, semantic retrieval, MCP tools, and a Databricks Agent Bricks supervisor.
+An educational, production-minded capstone that helps a user research public companies using grounded market data and financial news. The project combines a Databricks-hosted web interface, Lakebase application storage, Spark ingestion and enrichment, semantic retrieval, and read/write MCP tools that were validated with an AI client.
 
-Phases 1 and 2 establish the relational schema, configuration/database boundary, and Massive-backed service layer. Phases 3B and 3C add Lakebase Autoscaling OAuth connectivity and validate the live stock-data ingestion path. Phase 4 adds Serverless article processing plus an offline implementation of vector embedding and semantic retrieval. Application routes, LLM synthesis, MCP tools, agent integration, and frontend behavior remain intentionally unimplemented.
+The completed path covers Massive ingestion, Lakebase Autoscaling OAuth connectivity, Serverless Spark article processing, MiniLM embeddings, vector retrieval, grounded research-context assembly, a FastMCP application boundary, and a compact research dashboard. The application does not generate investment advice and does not run an LLM internally.
 
 ## Capstone requirements
 
@@ -12,8 +12,8 @@ Phases 1 and 2 establish the relational schema, configuration/database boundary,
 - A Spark data pipeline for ingestion and enrichment
 - Processing of unstructured financial-news content
 - Text chunking, embeddings, and semantic retrieval
-- An MCP server hosted as a separate Databricks App
-- A Databricks Agent Bricks / Supervisor Agent that uses the MCP tools
+- A FastMCP server and web frontend hosted together in one Databricks App
+- Agent-ready MCP tools validated through Databricks AI Playground
 - MCP/agent capabilities for both reads and retrieval and real Lakebase writes
 - Source metadata retained through ingestion and retrieval so answers can cite their evidence
 - Secrets held in Databricks secrets or local untracked environment configuration, never in frontend code or git
@@ -57,7 +57,7 @@ Massive Stocks REST API
 
 `app/repositories.py` provides parameterized, idempotent SQL operations for users, the deterministic default watchlist, companies, daily price snapshots, news articles, article/ticker relationships, and read-side price/news retrieval. It opens transactions only when a method is called and contains no HTTP logic.
 
-`app/services.py` composes Massive reads with repository writes for company, price-history, and news refreshes. Later Flask routes and MCP tools will call this same service layer instead of duplicating API or SQL behavior.
+`app/services.py` composes Massive reads with repository writes for company, price-history, and news refreshes. The MCP tools and web research route reuse the service layer instead of duplicating API or SQL behavior.
 
 All Phase 2 tests use mocked HTTP sessions and database connections. No live Massive request, Lakebase connection, or deployment validation is claimed.
 
@@ -88,12 +88,12 @@ The database credential is generated immediately before a new connection and is 
 The confirmed local Lakebase Autoscaling environment can be selected in PowerShell without setting `PGPASSWORD`:
 
 ```powershell
-$env:PGHOST="ep-proud-waterfall-d8765xn2.database.us-east-2.cloud.databricks.com"
-$env:PGDATABASE="databricks_postgres"
-$env:PGUSER="sharifip1234@gmail.com"
+$env:PGHOST="<lakebase-host>"
+$env:PGDATABASE="<database-name>"
+$env:PGUSER="<database-role>"
 $env:PGPORT="5432"
 $env:PGSSLMODE="require"
-$env:ENDPOINT_NAME="projects/stock-research-capstone/branches/production/endpoints/primary"
+$env:ENDPOINT_NAME="<endpoint-resource-name>"
 ```
 
 The local Databricks CLI profile must already be authenticated to the target workspace. From the repository root, run the scripts in order:
@@ -216,7 +216,7 @@ Application-side semantic retrieval remains independent of Spark. `QueryEmbeddin
 .\.venv\Scripts\python.exe scripts\search_news.py "Apple CEO succession" --ticker AAPL --top-k 5
 ```
 
-The Phase 4B implementation is offline-tested only. The migration, embedding notebook, and live semantic query have not yet been executed against Databricks or Lakebase. LLM answer generation and RAG synthesis remain out of scope.
+The Phase 4B migration, embedding path, and cosine retrieval were validated with Lakebase, and semantic news retrieval was subsequently exercised through the deployed MCP server. LLM answer generation remains outside the application; the returned context is RAG-ready for an external AI client.
 
 ## Phase 5A grounded research context
 
@@ -241,7 +241,7 @@ structured Lakebase company, price, news, and semantic evidence
 bounded research context
 ```
 
-`ResearchContextService` combines persisted company metadata, a bounded recent price window, ticker-specific recent news, and citation-ready semantic chunks. It preserves retrieval order, source URLs, article and chunk identifiers, publication metadata, sentiment, and similarity while excluding vectors from the returned context. `scripts/build_research_context.py` provides a concise local preview of counts and evidence titles. LLM generation, agent behavior, MCP tools, and citation prose remain deferred to later phases.
+`ResearchContextService` combines persisted company metadata, a bounded recent price window, ticker-specific recent news, and citation-ready semantic chunks. It preserves retrieval order, source URLs, article and chunk identifiers, publication metadata, sentiment, and similarity while excluding vectors from the returned context. `scripts/build_research_context.py` provides a concise local preview of counts and evidence titles. The service now supports both MCP retrieval and the web research endpoint without embedding LLM generation in the application.
 
 ## Phase 5B read-only MCP server
 
@@ -291,47 +291,79 @@ The write tools are `add_to_watchlist`, `remove_from_watchlist`, `save_research_
 
 Mutations require explicit user intent. The MCP server never adds a ticker or saves a note or report as a side effect of retrieval or generated research.
 
-## Proposed architecture
+## Phase 8 Databricks App web interface
+
+The existing `mcp-stock-research` Databricks App now serves two boundaries from the same stateless FastMCP process:
+
+- `/mcp` preserves all nine read/write MCP tools.
+- `/` serves the stock research dashboard.
+- `/api/research` validates a ticker and question, then delegates directly to `ResearchContextService`.
+
+The dashboard displays persisted company metadata, the latest close and bounded recent prices, ticker-linked recent news, and citation-ready semantic evidence. Browser rendering uses DOM `textContent`; external sources are limited to HTTP(S) links with `target="_blank"` and `rel="noopener noreferrer"`. The frontend receives no vectors, credentials, raw source payloads, or OAuth configuration.
+
+## Final architecture
 
 ```text
-User
-  |
-  v
-Databricks App (frontend + application API)
-  |
-  +-----------------------> Lakebase PostgreSQL
-  |                           - users and watchlists
-  |                           - company and price snapshots
-  |                           - news documents and chunks
-  |                           - embeddings and source metadata
-  |                           - notes and analysis reports
-  |
-  v
-Databricks Agent Bricks / Supervisor Agent
-  |
-  v
-MCP Server Databricks App
-  |                         \
-  v                          v
-Domain services          Retrieval services
-  |                         |
-  +--> Massive Stocks API   +--> Lakebase/pgvector
-  +--> Lakebase reads       +--> grounded news chunks
-  +--> Lakebase writes
-
-Scheduled Databricks workflow
-  |
-  v
-Spark ingestion and enrichment pipeline
-  +--> Massive company, price, and news data
-  +--> article extraction and normalization
-  +--> chunking and embedding generation
-  +--> idempotent persistence to Lakebase
+Massive Stocks API
+        |
+        v
+ingestion and service layer
+        |
+        v
+Lakebase relational tables
+        |
+        v
+Spark article extraction and chunking
+        |
+        v
+MiniLM 384-dimensional embeddings
+        |
+        v
+Lakebase vector retrieval
+        |
+        v
+ResearchContextService
+        |
+        v
+FastMCP Databricks App
+        |
+        +--> nine MCP tools ------> AI client
+        |
+        +--> /api/research -------> Databricks App web UI
 ```
 
-The frontend and MCP server are separate deployment units. Shared business rules will live below those boundaries so the UI and agent use the same validation, Massive integration, and Lakebase access behavior. MCP tools will remain thin and return stable, client-safe results.
+Massive supplies third-party company, price, and news facts. Spark processes unstructured article bodies into deterministic chunks, MiniLM creates embeddings, and Lakebase stores both relational application data and vector-searchable evidence. `ResearchContextService` assembles bounded semantic RAG-ready context, while the shared FastMCP app exposes safe read/write tools and the web research interface.
 
-## Planned implementation phases
+## AI client and agent status
+
+The deployed MCP server was successfully connected to an LLM through Databricks AI Playground. The model selected and executed retrieval and explicit write tools against the live MCP endpoint. A dedicated Supervisor Agent was planned but could not be created because the Databricks Free Edition usage quota was reached; no Supervisor Agent deployment is claimed. The MCP server remains agent-ready for that integration when quota is available.
+
+## Live MCP validation
+
+The following deployed behaviors were validated without recording personal email addresses:
+
+- `health` returned a successful service response.
+- `get_company(AAPL)` returned persisted company metadata.
+- `search_financial_news(AAPL, ...)` returned grounded semantic evidence.
+- `add_to_watchlist` completed successfully.
+- `save_research_note` completed successfully and returned `note_id` 1.
+- `remove_from_watchlist` was callable and executed correctly; no claim is made that a row was removed when the result was `removed=false`.
+
+## Rubric alignment
+
+- [x] Spark pipeline — bounded Serverless extraction, chunking, and embedding workflows
+- [x] Third-party Massive API — company, daily-price, and news ingestion
+- [x] Unstructured data processing — article extraction with grounded metadata fallback
+- [x] Lakebase relational tables — ten normalized application/research entities
+- [x] Embeddings, vector retrieval, and RAG context — MiniLM, cosine search, and `ResearchContextService`
+- [x] AI read/write tool use — nine MCP tools exercised through Databricks AI Playground
+- [x] Databricks App frontend — implemented in the existing FastMCP app; redeployment is the remaining operational step
+
+## Submission hygiene
+
+The repository ignores local virtual environments, `.env` files, Python and test caches, model caches, IDE metadata, generated datasets, build output, credentials, and archives. `.env.example` remains tracked with placeholders only. Submission artifacts must not include ignored local environments or caches.
+
+## Implementation phases
 
 ### Phase 0 — Repository initialization (complete)
 
@@ -369,36 +401,37 @@ The frontend and MCP server are separate deployment units. Shared business rules
 - Extract article bodies through partition-scoped HTTP sessions and trafilatura, with metadata fallback.
 - Generate deterministic overlapping chunks and append only chunks whose article IDs passed the unprocessed-article anti join.
 
-### Phase 4B — Embeddings and semantic retrieval (offline implementation)
+### Phase 4B — Embeddings and semantic retrieval (complete)
 
 - Embed bounded unprocessed chunks with `all-MiniLM-L6-v2` through Spark.
 - Persist 384-dimensional vectors through a Serverless-safe Lakebase Data API update.
 - Retrieve bounded citation-ready chunks through the Lakebase cosine ANN index.
 
-### Phase 5 — MCP server and agent integration
+### Phase 5 — MCP server and AI client integration (complete within available quota)
 
 - Host a FastMCP server as a Databricks App.
 - Expose thin tools for company data, historical performance, semantic news search, watchlist reads/writes, research notes, and analysis reports.
 - Add structured, client-safe errors and tests proving tool delegation.
-- Configure the Databricks Agent Bricks supervisor to compose primitive tools and stay grounded in tool results.
+- Validate model-selected retrieval and write-tool execution through Databricks AI Playground.
+- Keep the MCP server ready for a dedicated Supervisor Agent when Free Edition quota is available.
 
-### Phase 6 — Frontend and end-to-end validation
+### Phase 8 — Frontend implementation (complete; redeployment pending)
 
-- Build the Databricks App research interface without exposing credentials.
-- Connect user identity, watchlists, research conversations, citations, notes, and saved reports.
-- Exercise read, retrieval, and write paths end to end and capture capstone evidence.
+- Serve a compact research interface from the existing FastMCP Databricks App.
+- Reuse `ResearchContextService` for company, price, news, and semantic evidence.
+- Preserve safe browser rendering, MCP behavior, and credential isolation.
 
-### Phase 7 — Hardening and presentation
+### Phase 9 — Submission documentation and hygiene (complete)
 
-- Add observability, deployment documentation, failure-path checks, and rubric-focused tests.
-- Review privacy, secret handling, SQL safety, ingestion idempotency, and citation quality.
-- Prepare demonstration evidence and identify optional stretch goals separately from the MVP.
+- Record final architecture, live validation, quota limitations, and rubric alignment.
+- Review privacy, secret handling, ignored local artifacts, and safe failure paths.
+- Keep final deployment and submission packaging as explicit operator steps.
 
 ## Repository layout
 
 ```text
 app/          Databricks frontend app and application boundary
-mcp_server/   FastMCP Databricks App and thin tool boundary
+mcp_server/   FastMCP tools, web API route, and static dashboard assets
 pipelines/    Spark ingestion, extraction, chunking, and embedding workflows
 sql/          Idempotent Lakebase schema and migration scripts
 tests/        Focused deterministic and boundary tests

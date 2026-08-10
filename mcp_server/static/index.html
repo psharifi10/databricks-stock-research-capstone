@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Grounded company, price, and financial-news research."
+    >
+    <title>AI Stock Research Assistant</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__inner">
+        <p class="eyebrow">Databricks AI Engineer Capstone</p>
+        <h1>AI Stock Research Assistant</h1>
+        <p class="subtitle">
+          Grounded stock research using Lakebase, semantic news retrieval, and Massive.
+        </p>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="research-panel" aria-labelledby="research-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Research workspace</p>
+            <h2 id="research-heading">Explore persisted market evidence</h2>
+          </div>
+          <span class="grounded-badge">Grounded data</span>
+        </div>
+
+        <form id="research-form" class="research-form">
+          <label class="field field--ticker">
+            <span>Ticker</span>
+            <input
+              id="ticker"
+              name="ticker"
+              value="AAPL"
+              autocomplete="off"
+              maxlength="8"
+              required
+            >
+          </label>
+
+          <label class="field field--question">
+            <span>Research question</span>
+            <textarea id="question" name="question" rows="3" required>What developments could affect this company's future outlook?</textarea>
+          </label>
+
+          <button id="research-button" type="submit">
+            <span class="button-label">Research</span>
+            <span class="button-progress" aria-hidden="true">Researching…</span>
+          </button>
+        </form>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+        <div id="error" class="error-message" role="alert" hidden></div>
+      </section>
+
+      <div id="results" class="results" hidden>
+        <section class="result-card result-card--company" aria-labelledby="company-heading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Company</p>
+              <h2 id="company-heading">Company profile</h2>
+            </div>
+          </div>
+          <div id="company-content"></div>
+        </section>
+
+        <section class="result-card" aria-labelledby="prices-heading">
+          <div class="section-heading section-heading--split">
+            <div>
+              <p class="section-kicker">Recent prices</p>
+              <h2 id="prices-heading">Latest persisted history</h2>
+            </div>
+            <div id="latest-price" class="latest-price"></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Date</th>
+                  <th scope="col">Open</th>
+                  <th scope="col">High</th>
+                  <th scope="col">Low</th>
+                  <th scope="col">Close</th>
+                </tr>
+              </thead>
+              <tbody id="price-rows"></tbody>
+            </table>
+          </div>
+          <p id="price-empty" class="empty-state" hidden>No persisted price history is available.</p>
+        </section>
+
+        <section class="result-card" aria-labelledby="news-heading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Recent news</p>
+              <h2 id="news-heading">Ticker-linked coverage</h2>
+            </div>
+          </div>
+          <div id="news-list" class="item-list"></div>
+        </section>
+
+        <section class="result-card" aria-labelledby="evidence-heading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">Semantic evidence</p>
+              <h2 id="evidence-heading">Relevant article passages</h2>
+            </div>
+          </div>
+          <div id="evidence-list" class="item-list"></div>
+        </section>
+      </div>
+    </main>
+
+    <footer>
+      Research support only. This interface does not provide investment advice.
+    </footer>
+  </body>
+</html>

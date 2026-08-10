@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
+from json import JSONDecodeError
 from pathlib import Path
 import sys
 from typing import Any
@@ -17,6 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from app.repositories import StockRepository
 from app.services import (
@@ -34,6 +37,7 @@ from pipelines.embeddings import (
     QueryEmbeddingService,
     normalize_query_text,
 )
+from mcp_server.frontend import load_static_asset
 
 
 mcp = FastMCP("Stock Research MCP")
@@ -132,6 +136,73 @@ def _citation_ready_news(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
+async def frontend_home(_request: Request) -> Response:
+    """Serve the stock-research dashboard from the existing MCP application."""
+
+    content, _media_type = load_static_asset("index.html")
+    return HTMLResponse(content)
+
+
+@mcp.custom_route(
+    "/static/styles.css",
+    methods=["GET"],
+    include_in_schema=False,
+)
+async def frontend_styles(_request: Request) -> Response:
+    """Serve the dashboard stylesheet as a fixed local asset."""
+
+    content, media_type = load_static_asset("styles.css")
+    return Response(content, media_type=media_type)
+
+
+@mcp.custom_route(
+    "/static/app.js",
+    methods=["GET"],
+    include_in_schema=False,
+)
+async def frontend_script(_request: Request) -> Response:
+    """Serve the dashboard JavaScript as a fixed local asset."""
+
+    content, media_type = load_static_asset("app.js")
+    return Response(content, media_type=media_type)
+
+
+@mcp.custom_route("/api/research", methods=["POST"])
+async def research_api(request: Request) -> Response:
+    """Return existing grounded research context through a safe JSON boundary."""
+
+    try:
+        payload = await request.json()
+    except (JSONDecodeError, UnicodeDecodeError):
+        return JSONResponse(
+            _error("validation_error", "A valid JSON object is required."),
+            status_code=400,
+        )
+
+    try:
+        if not isinstance(payload, Mapping):
+            raise ValidationError("A JSON object is required.")
+        context = get_services().research_context.build_research_context(
+            payload.get("ticker"),
+            payload.get("question"),
+        )
+        return JSONResponse(_success(context))
+    except (ValidationError, EmbeddingError) as error:
+        return JSONResponse(
+            _error("validation_error", str(error)),
+            status_code=400,
+        )
+    except Exception:
+        return JSONResponse(
+            _error(
+                "service_error",
+                "The stock research service could not complete the request.",
+            ),
+            status_code=500,
+        )
 
 
 @mcp.tool
